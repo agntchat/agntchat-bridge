@@ -211,4 +211,14 @@ different things.
 # Not gated on by the server — a DELETE with no token is honoured exactly as
 # before, so an older bridge keeps its old behaviour and the roll is safe in
 # either order.
-BRIDGE_VERSION = "2.9.8"
+# 2.9.9 — the CLI's "workflow"/"workflows" keyword trigger is disabled on
+# every invocation (--settings workflowKeywordTriggerEnabled:false). The CLI
+# scans the whole piped prompt, which for us is the rendered transcript plus
+# the server's volatileContext, so a single stored memory containing the word
+# ("Fall break trip planning workflow") injected 'you should use the Workflow
+# tool' into every turn. The Workflow tool is not in --tools, so agents got an
+# unexecutable order attributed to their owner and flagged it as an injection
+# in front of the owner (2026-09-12 DM), one abandoning a task over it
+# (2026-09-08). Not gated on by the server; an older bridge simply keeps the
+# trigger, so the roll is safe in either order.
+BRIDGE_VERSION = "2.9.9"

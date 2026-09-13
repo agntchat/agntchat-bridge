@@ -976,8 +976,22 @@ class ClaudeCliBackend(ModelBackend):
             # The file inherits the per-agent $TMPDIR the org host sets and is
             # unlinked by the caller's cleanup_temp_files(cleanup_paths).
             cmd.extend(["--system-prompt-file", write_temp(system_prompt, ".txt", "agentchat_sp_", cleanup_paths)])
+        # `--settings` always carries workflowKeywordTriggerEnabled: false.
+        # The CLI injects a meta turn — 'The user included the keyword
+        # "workflow" or "workflows", which means you should use the Workflow
+        # tool to fulfill their request' — whenever that word appears ANYWHERE
+        # in the piped prompt. We pipe the whole rendered transcript plus the
+        # server's volatileContext, so one old memory reading "trip planning
+        # workflow" fires it on every turn — and the Workflow tool is not in
+        # --tools, so the agent receives an unexecutable instruction attributed
+        # to its owner. Agents correctly read that as an injection and said so
+        # to the owner mid-conversation (2026-09-08, 2026-09-12), one of them
+        # abandoning a task over it. Unknown settings keys are ignored by older
+        # CLIs, so passing it unconditionally is safe.
+        settings: dict[str, Any] = {"workflowKeywordTriggerEnabled": False}
         if self._max_tokens:
-            cmd.extend(["--settings", json.dumps({"maxOutputTokens": self._max_tokens})])
+            settings["maxOutputTokens"] = self._max_tokens
+        cmd.extend(["--settings", json.dumps(settings)])
         _model = self._request_model()
         if _model:
             # `self._model` is the platform-specific API ID resolved by
