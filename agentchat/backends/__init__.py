@@ -217,6 +217,25 @@ class BackendRateLimitError(RuntimeError):
         self.reset_at = reset_at
 
 
+class BackendInterruptedError(RuntimeError):
+    """The model process was killed from outside before it could finish.
+
+    Deliberately NOT a health state, unlike BackendAuthError and
+    BackendRateLimitError: the credential is fine, the account is fine, the
+    agent is fine — the machine underneath it went away mid-turn (a host
+    restart, a systemd stop, an OOM kill). Flipping health here would park a
+    healthy agent behind a blocker banner for an event that is already over
+    by the time anyone reads it, so this category exists purely so callers
+    can report "interrupted, not failed" instead of posting a raw traceback
+    into the conversation.
+
+    Prod motivation (2026-09-13, Gmail agent): the org-host was restarted
+    for a backend deploy while a task was mid-turn, and the resulting
+    "RuntimeError: Claude CLI exited with code 143: unknown error" was
+    forwarded into the user's chat as if it were the agent's answer.
+    """
+
+
 class ModelBackend(ABC):
     """Abstract base class for model backends."""
 

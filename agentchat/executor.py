@@ -42,6 +42,7 @@ import httpx
 
 from ._dedup import MessageDedup
 from .auth import TokenManager
+from .backends import BackendInterruptedError
 from .errors import AgentChatError, AuthError, StaleContextError
 from .transport import PhoenixTransport
 
@@ -1168,6 +1169,19 @@ class ExecutorClient:
                     f"Task exceeded the {self._task_timeout}s "
                     f"({self._task_timeout // 60}m) execution timeout "
                     "and was aborted."
+                )
+            elif isinstance(e, BackendInterruptedError):
+                # The model process was killed from under us — a host
+                # restart, a supervisor stop. Nothing about the agent, the
+                # task, or the credentials is wrong, so the failure card must
+                # not read like a bug report: the raw form of this ("
+                # RuntimeError: Claude CLI exited with code 143: unknown
+                # error") was posted verbatim into a user's chat as the
+                # agent's answer on 2026-09-13.
+                error_text = (
+                    "The run was interrupted before it finished — the machine "
+                    "running this agent restarted mid-task. Nothing was wrong "
+                    "with the request; it can be run again."
                 )
             else:
                 detail = str(e).strip()

@@ -221,4 +221,26 @@ different things.
 # in front of the owner (2026-09-12 DM), one abandoning a task over it
 # (2026-09-08). Not gated on by the server; an older bridge simply keeps the
 # trigger, so the roll is safe in either order.
-BRIDGE_VERSION = "2.9.9"
+# 2.9.10 — two unrelated ways an agent told its owner a healthy integration
+# was broken, both found 2026-09-13 in the Gmail agent.
+#   (a) The pulse `toolAllowlist` filter matched tool defs with
+#       `d.get("name", d.get("type"))`. Only the `anthropic` backend builds
+#       Anthropic-shaped defs; every other backend (claude_cli included) gets
+#       OpenAI-shaped ones, where that expression returns the literal string
+#       "function". So the allowlist matched 0/80 defs and every pulse turn
+#       ran with NO tools — the agent then blamed the nearest plausible
+#       cause and told its owner to reconnect a Google account whose token
+#       had been refreshed minutes earlier. Now goes through _tool_def_name(),
+#       which reads both shapes, and logs an error if a non-empty allowlist
+#       ever matches nothing again.
+#   (b) A CLI killed from outside (host restart: exit 143 / SIGTERM) was a
+#       plain RuntimeError, and the task path stringifies the exception into
+#       the failure card — so "RuntimeError: Claude CLI exited with code 143:
+#       unknown error" was posted into a user's chat as the agent's answer.
+#       Now BackendInterruptedError, reported as an interrupted run. It is
+#       deliberately NOT a health state: the agent is fine, the machine under
+#       it went away, and a blocker banner for an event that is already over
+#       helps nobody.
+# Neither is gated on by the server — an older bridge keeps the old behaviour
+# — so the roll is safe in either order.
+BRIDGE_VERSION = "2.9.10"

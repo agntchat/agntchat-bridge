@@ -75,6 +75,7 @@ from agentchat.errors import AgentChatError, AuthError, StaleContextError  # noq
 from agentchat.backends import (  # noqa: E402
     MODEL_OVERRIDE,
     BackendAuthError,
+    BackendInterruptedError,
     BackendRateLimitError,
     ChatMessage,
     create_backend,
@@ -2986,6 +2987,29 @@ def _resolved_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any
     return result
 
 
+def _tool_def_name(tool_def: dict[str, Any]) -> str | None:
+    """The tool's name, whichever wire shape the def is in.
+
+    Anthropic defs carry `name` at the top level; OpenAI defs nest it under
+    `function`. Callers that match a def against a server-sent list of bare
+    tool names (the pulse `toolAllowlist`) MUST go through this — reading
+    `d["name"]` with a `d["type"]` fallback silently yields the literal
+    string "function" for every OpenAI-shaped def, so the match is 0/N and
+    the turn runs with no tools at all. That is exactly what happened to
+    every `claude_cli` agent's pulse turns until 2026-09-13: the Gmail agent
+    reported "Gmail access is currently unavailable — reconnect your Google
+    account" on a perfectly healthy OAuth token, because `_tool_defs` is
+    built in OpenAI shape for every backend except `anthropic`.
+    """
+    name = tool_def.get("name")
+    if name:
+        return name
+    fn = tool_def.get("function")
+    if isinstance(fn, dict):
+        return fn.get("name")
+    return None
+
+
 def _build_tool_param_details_from_resolved(tools: list[dict[str, Any]]) -> str:
     """Build parameter details for single-shot mode from backend-resolved tool dicts.
 
@@ -4210,8 +4234,8 @@ def run_single_agent(
         if isinstance(_allowlist, list) and _allowlist:
             _allowed_names = set(_allowlist)
             turn_tool_defs = [
-                d for d in _tool_defs
-                if d.get("name", d.get("type")) in _allowed_names
+                d for d in (_tool_defs or [])
+                if _tool_def_name(d) in _allowed_names
             ]
             turn_resolved_tools = [
                 t for t in (resolved_tools or [])
@@ -4224,8 +4248,20 @@ def run_single_agent(
             logger.info(
                 "[%s] toolAllowlist active for task %s: %d/%d tool defs advertised",
                 executor_key, task.task_id or task.id,
-                len(turn_tool_defs), len(_tool_defs),
+                len(turn_tool_defs), len(_tool_defs or []),
             )
+            if _tool_defs and not turn_tool_defs:
+                # A non-empty allowlist that matches nothing means the names
+                # on the wire and the names in the defs have diverged — the
+                # turn is about to run toolless and the agent will invent a
+                # reason why. Never silent.
+                logger.error(
+                    "[%s] toolAllowlist matched 0 of %d tool defs for task %s "
+                    "— allowlist sample=%s def-name sample=%s",
+                    executor_key, len(_tool_defs), task.task_id or task.id,
+                    sorted(_allowed_names)[:5],
+                    [_tool_def_name(d) for d in _tool_defs[:5]],
+                )
         else:
             turn_tool_defs = _tool_defs
             turn_resolved_tools = resolved_tools
@@ -5007,6 +5043,15 @@ def run_single_agent(
                 _rate_limited = True
                 _reset_at = e.reset_at
                 await _stream_cb.cancel()
+            except BackendInterruptedError as e:
+                # Killed from outside (host restart / supervisor stop), not a
+                # bug in this turn. logger.exception here would print a
+                # traceback and make an infra event look like a code fault in
+                # triage; the reply falls through to the same generic copy.
+                logger.warning("[%s] Model call interrupted (tool_use): %s", executor_key, e)
+                result = None
+                _auth_failed = False
+                await _stream_cb.cancel()
             except Exception:
                 logger.exception("[%s] Model call failed (tool_use)", executor_key)
                 result = None
@@ -5258,6 +5303,11 @@ def run_single_agent(
                 result = None
                 _rate_limited = True
                 _reset_at = e.reset_at
+            except BackendInterruptedError as e:
+                # See the tool_use branch: infra kill, not a turn fault.
+                logger.warning("[%s] Model call interrupted (code_action): %s", executor_key, e)
+                result = None
+                _auth_failed = False
             except Exception:
                 logger.exception("[%s] Model call failed (code_action)", executor_key)
                 result = None
@@ -5325,6 +5375,12 @@ def run_single_agent(
             result = None
             _rate_limited = True
             _reset_at = e.reset_at
+            await _stream_cb.cancel()
+        except BackendInterruptedError as e:
+            # See the tool_use branch: infra kill, not a turn fault.
+            logger.warning("[%s] Model call interrupted (single_shot): %s", executor_key, e)
+            result = None
+            _auth_failed = False
             await _stream_cb.cancel()
         except Exception:
             logger.exception("[%s] Model call failed", executor_key)

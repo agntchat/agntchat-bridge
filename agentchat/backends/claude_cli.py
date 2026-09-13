@@ -39,6 +39,7 @@ from . import (
     MCP_CONTEXT,
     BackendAuthError,
     BackendHealth,
+    BackendInterruptedError,
     BackendRateLimitError,
     ChatMessage,
     MCPContext,
@@ -133,6 +134,23 @@ _AUTH_FAILURE_RE = re.compile(
 
 def _is_auth_failure(text: str | None) -> bool:
     return bool(text) and bool(_AUTH_FAILURE_RE.search(text))
+
+
+# SIGTERM (15) and SIGKILL (9) — the two signals an org-host restart, a
+# supervisor stop, or the OOM killer actually sends. Both spellings are
+# checked because the two are not interchangeable here: asyncio reports a
+# signal-killed child as a NEGATIVE returncode (-15), while a CLI that traps
+# the signal and exits on its own reports the shell convention 128+N (143).
+# Prod has shown the 143 form; -15 is the documented POSIX one. Accept both
+# rather than betting on which layer does the reporting.
+_KILL_SIGNALS = (signal.SIGTERM, signal.SIGKILL)
+_SIGNAL_EXIT_CODES = frozenset(
+    [-int(s) for s in _KILL_SIGNALS] + [128 + int(s) for s in _KILL_SIGNALS]
+)
+
+
+def _killed_by_signal(returncode: int | None) -> bool:
+    return returncode in _SIGNAL_EXIT_CODES
 
 
 # Failure text that means "the Claude account this agent runs on has hit its
@@ -1334,6 +1352,23 @@ class ClaudeCliBackend(ModelBackend):
         unusable.
         """
         message = f"Claude CLI exited with code {returncode}: {detail}"
+
+        # Signal deaths are classified FIRST, on the returncode alone. A
+        # process killed from outside never got to write a diagnostic, so
+        # `detail` here is almost always the useless "unknown error" — and
+        # letting that fall through to the text-matching branches below
+        # decides a category by coin flip. The returncode is authoritative
+        # and the text is not, so it wins.
+        #
+        # This backend's own reaper (_kill_process_group) always fires from a
+        # `finally` AFTER the TimeoutError/CancelledError has been raised, so
+        # a self-inflicted kill never reaches this function. Anything landing
+        # here was killed by something else: systemd stopping the org-host,
+        # a supervisor SIGTERM, the OOM killer.
+        if _killed_by_signal(returncode):
+            # No _mark_health call, deliberately — see BackendInterruptedError.
+            # The agent is healthy; the machine under it went away.
+            return BackendInterruptedError(message)
 
         if _is_auth_failure(detail):
             self._mark_health("unauthenticated", detail[:300])
