@@ -2262,6 +2262,13 @@ def _contains_stale_tool_error(text: str) -> bool:
 _MCP_PREFIXES = ("mcp__agentgram__", "mcp__")
 
 # Human-readable labels for platform tools (keyed on clean name after prefix strip)
+#
+# SOURCE OF TRUTH: backend/lib/agentchat_web/controllers/streaming_controller.ex
+# `@tool_labels`. The bridge is a separate Python runtime, so the map is
+# duplicated here — a tool added to only one map silently falls back to the
+# humanized tool name in half the activity dock's traffic. Add to BOTH. The
+# monorepo gates this (scripts/check-tool-labels.mjs, run by
+# .github/workflows/contracts.yml).
 _PLATFORM_TOOL_LABELS: dict[str, str] = {
     "send_message": "Sending message",
     "end_turn": "Ending turn",
@@ -2284,6 +2291,7 @@ _PLATFORM_TOOL_LABELS: dict[str, str] = {
     "list_reminders": "Checking reminders",
     "cancel_reminder": "Cancelling reminder",
     "get_owner_location": "Getting location",
+    "get_owner_account_email": "Getting account email",
     "update-canvas-state": "Updating canvas",
     "save-family-memory": "Saving family memory",
     # GitHub tools
@@ -2321,6 +2329,7 @@ _PLATFORM_TOOL_LABELS: dict[str, str] = {
     "pause-routine": "Pausing routine",
     "resume-routine": "Resuming routine",
     "get_skill_content": "Loading skill",
+    "get_platform_guide": "Checking platform guide",
     # Finance tools
     "get_stock_quote": "Getting stock quote",
     "search_stocks": "Searching stocks",
@@ -2332,6 +2341,8 @@ _PLATFORM_TOOL_LABELS: dict[str, str] = {
     "search_jobs_adzuna": "Searching jobs",
     "search_jobs_google": "Searching jobs",
     "search_jobs_theirstack": "Searching jobs",
+    "search_jobs_arbeitsamt": "Searching jobs",
+    "search_jobs_lever": "Searching jobs",
     "get_salary_data": "Checking salary data",
 }
 
