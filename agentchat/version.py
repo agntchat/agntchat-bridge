@@ -243,4 +243,14 @@ different things.
 #       helps nobody.
 # Neither is gated on by the server — an older bridge keeps the old behaviour
 # — so the roll is safe in either order.
-BRIDGE_VERSION = "2.9.10"
+# 2.10.0 — agent queries: the bridge answers `gateway_agent_query` by running
+# ONE stateless completion on its own seat (ModelBackend.generate, so
+# whatever provider this agent already pays for) and posting back the text,
+# the model that actually ran, and the usage. This moves agent-owned backend
+# work (soul/pulse revision, memory extraction and consolidation, self
+# reviews, knowledge filing) off the platform Anthropic API key and onto the
+# agent's own subscription, and unlocks it from Claude.
+# GATED: the server checks this version before dispatching. An older bridge
+# has no handler, so a query would sit unanswered until the caller's timeout
+# — the floor turns that into an immediate, honest `agent_offline`.
+BRIDGE_VERSION = "2.10.0"

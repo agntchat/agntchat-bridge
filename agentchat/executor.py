@@ -274,10 +274,52 @@ class ScopeRequest:
         )
 
 
+@dataclass
+class AgentQuery:
+    """One unit of agent-owned LLM work, to run on THIS agent's own seat.
+
+    Not a turn: no directive stack, no history, no tools. The backend sends a
+    system prompt and a user prompt; the seat answers with text. That keeps
+    the token cost the same as the platform API call it replaces while moving
+    the billing onto the subscription the agent already runs on.
+
+    Deliberately carries no model. Whatever backend this bridge was started
+    with answers it, so an agent on a Codex seat answers on Codex. ``tier``
+    is an advisory hint ("fast" | "deep") for backends that can pick.
+    """
+
+    id: str
+    agent_id: str
+    label: str
+    system_prompt: str
+    user_content: str
+    max_tokens: int | None = None
+    tier: str = "fast"
+    status: str = "pending"
+    expires_at: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> AgentQuery:
+        return cls(
+            id=d["id"],
+            agent_id=d.get("agentId", ""),
+            label=d.get("label", "query"),
+            system_prompt=d.get("systemPrompt", ""),
+            user_content=d.get("userContent", ""),
+            max_tokens=d.get("maxTokens"),
+            tier=d.get("tier") or "fast",
+            status=d.get("status", "pending"),
+            expires_at=d.get("expiresAt"),
+            raw=d,
+        )
+
+
 TaskHandler = Callable[[GatewayTask], Awaitable[Union[Dict[str, Any], str, None]]]
 MessageHandler = Callable[[GatewayMessage], Awaitable[Union[str, None]]]
 TaskCompletedHandler = Callable[[Dict[str, Any]], Awaitable[None]]
 ScopeRequestHandler = Callable[["ScopeRequest"], Awaitable[Optional[Dict[str, Any]]]]
+AgentQueryHandler = Callable[["AgentQuery"], Awaitable[Optional[Dict[str, Any]]]]
 CommandHandler = Callable[[Dict[str, Any]], Awaitable[None]]
 
 
@@ -339,6 +381,7 @@ class ExecutorClient:
         self._task_handler: TaskHandler | None = None
         self._message_handler: MessageHandler | None = None
         self._scope_request_handler: ScopeRequestHandler | None = None
+        self._agent_query_handler: AgentQueryHandler | None = None
         self._task_completed_handlers: list[TaskCompletedHandler] = []
         # Handles backend control directives other than `shutdown` (which the
         # client handles itself) — e.g. sub-agent spawn/despawn.
@@ -423,6 +466,17 @@ class ExecutorClient:
         title, description, and optionally scope_message, or None to skip.
         """
         self._scope_request_handler = handler
+        return handler
+
+    def on_agent_query(self, handler: AgentQueryHandler) -> AgentQueryHandler:
+        """Register the handler for agent-owned LLM work.
+
+        The handler receives an AgentQuery and should return
+        ``{"text": ..., "model": ..., "usage": {...}}``, or raise to report a
+        failure. The server is blocked on the answer, so the handler must not
+        do anything slow beyond the model call itself.
+        """
+        self._agent_query_handler = handler
         return handler
 
     def on_command(self, handler: CommandHandler) -> CommandHandler:
@@ -612,10 +666,11 @@ class ExecutorClient:
                     response = reply.get("response", {}) if isinstance(reply, dict) else {}
                     if response:
                         logger.info(
-                            "[WS-GATEWAY] catchup drained messages=%s tasks=%s scope=%s",
+                            "[WS-GATEWAY] catchup drained messages=%s tasks=%s scope=%s queries=%s",
                             response.get("messages", 0),
                             response.get("tasks", 0),
                             response.get("scope_requests", 0),
+                            response.get("agent_queries", 0),
                         )
                 except Exception:
                     logger.exception("[WS-GATEWAY] catchup push failed (live events still flow)")
@@ -731,6 +786,11 @@ class ExecutorClient:
                 return
             self._spawn_tracked(self._handle_ws_scope_request(payload))
 
+        elif event == "gateway_agent_query":
+            if not payload or not payload.get("id"):
+                return
+            self._spawn_tracked(self._handle_ws_agent_query(payload))
+
         elif event == "gateway_command":
             # Pending commands (shutdown, pause, etc.) used to be delivered
             # via heartbeat response. Now pushed via WS so heartbeat cadence
@@ -807,6 +867,98 @@ class ExecutorClient:
             logger.warning("[WS-GATEWAY] Scope request handler timed out for %s", sr.id)
         except Exception:
             logger.exception("[WS-GATEWAY] Scope request handler failed for %s", sr.id)
+
+    async def _handle_ws_agent_query(self, payload: dict) -> None:
+        """Answer one agent query on this agent's own seat.
+
+        Deliberately NOT gated on the turn semaphore: a query is a single
+        stateless completion, and the backend caller is blocked waiting. Making
+        it queue behind a long agent turn would time the caller out for work
+        that costs a fraction of a turn.
+
+        Every exit reports something. A query nobody answers leaves the server
+        blocked until its timeout, so a failure is posted explicitly rather
+        than left to expire.
+        """
+        try:
+            query = AgentQuery.from_dict(payload)
+        except Exception:
+            logger.exception("[WS-GATEWAY] Failed to parse gateway_agent_query payload")
+            return
+
+        if self._agent_query_handler is None:
+            logger.warning("[WS-GATEWAY] No agent query handler registered for %s", query.id)
+            await self._fail_agent_query_safe(query.id, "no_handler_registered")
+            return
+
+        logger.info(
+            "[WS-GATEWAY] Agent query %s (%s, tier=%s)", query.id, query.label, query.tier
+        )
+        try:
+            result = await self._agent_query_handler(query)
+            if not result or not isinstance(result, dict):
+                await self._fail_agent_query_safe(query.id, "handler_returned_no_result")
+                return
+
+            await self.respond_to_agent_query(
+                query.id,
+                text=result.get("text") or "",
+                model=result.get("model"),
+                usage=result.get("usage"),
+            )
+        except asyncio.CancelledError:
+            # Shutdown mid-query. Tell the server so the caller fails fast
+            # instead of waiting out its full timeout, then re-raise so
+            # cancellation still propagates.
+            await self._fail_agent_query_safe(query.id, "executor_shutting_down")
+            raise
+        except Exception as e:
+            logger.exception("[WS-GATEWAY] Agent query handler failed for %s", query.id)
+            await self._fail_agent_query_safe(query.id, f"{type(e).__name__}: {e}"[:500])
+
+    async def _fail_agent_query_safe(self, query_id: str, reason: str) -> None:
+        """Report a failure, swallowing transport errors.
+
+        If this POST itself fails there is nothing more to try — the server
+        expires the row on its own deadline.
+        """
+        try:
+            await self.fail_agent_query(query_id, reason)
+        except Exception:
+            logger.warning("[WS-GATEWAY] Could not report agent query failure for %s", query_id)
+
+    async def respond_to_agent_query(
+        self,
+        query_id: str,
+        text: str,
+        model: str | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Post the seat's answer. `model`/`usage` are what actually ran."""
+        body: dict[str, Any] = {"text": text}
+        if model:
+            body["model"] = model
+        if usage:
+            body["usage"] = usage
+        return await self._post(
+            f"/api/gateway/agent-queries/{query_id}/respond",
+            json=body,
+        )
+
+    async def fail_agent_query(
+        self,
+        query_id: str,
+        error: str,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Tell the server this seat could not answer, and why."""
+        body: dict[str, Any] = {"error": error}
+        if model:
+            body["model"] = model
+        return await self._post(
+            f"/api/gateway/agent-queries/{query_id}/fail",
+            json=body,
+        )
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats with process metrics to keep the executor online."""

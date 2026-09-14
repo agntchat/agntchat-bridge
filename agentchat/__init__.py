@@ -2,7 +2,7 @@
 
 from .version import BRIDGE_VERSION
 from .client import AgentChatClient
-from .executor import ExecutorClient, GatewayTask
+from .executor import AgentQuery, ExecutorClient, GatewayTask
 from .models import Conversation, Message, Participant
 from .errors import (
     AgentChatError,
@@ -35,6 +35,7 @@ __all__ = [
     "AgentChatClient",
     "ExecutorClient",
     "GatewayTask",
+    "AgentQuery",
     "Conversation",
     "Message",
     "Participant",

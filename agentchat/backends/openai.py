@@ -112,7 +112,7 @@ class OpenAIBackend(ModelBackend):
         try:
             response = await self._client.chat.completions.create(
                 model=self._request_model(),
-                max_tokens=self._max_tokens,
+                max_tokens=self._request_max_tokens(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -163,7 +163,7 @@ class OpenAIBackend(ModelBackend):
         try:
             response = await self._client.chat.completions.create(
                 model=self._request_model(),
-                max_tokens=self._max_tokens,
+                max_tokens=self._request_max_tokens(),
                 messages=api_messages,
                 **self._sampling_kwargs(),
             )
@@ -235,7 +235,7 @@ class OpenAIBackend(ModelBackend):
             try:
                 response = await self._client.chat.completions.create(
                     model=self._request_model(),
-                    max_tokens=self._max_tokens,
+                    max_tokens=self._request_max_tokens(),
                     messages=api_messages,
                     tools=tools,
                     **self._sampling_kwargs(),
@@ -378,7 +378,7 @@ class OpenAIBackend(ModelBackend):
                 try:
                     response = await self._client.chat.completions.create(
                         model=self._request_model(),
-                        max_tokens=self._max_tokens,
+                        max_tokens=self._request_max_tokens(),
                         messages=api_messages,
                         # No tools = forces text-only response
                         **self._sampling_kwargs(),

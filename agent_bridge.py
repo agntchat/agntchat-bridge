@@ -73,6 +73,7 @@ import time as _time  # noqa: E402
 from agentchat.auth import TokenManager  # noqa: E402
 from agentchat.errors import AgentChatError, AuthError, StaleContextError  # noqa: E402
 from agentchat.backends import (  # noqa: E402
+    MAX_TOKENS_OVERRIDE,
     MODEL_OVERRIDE,
     BackendAuthError,
     BackendInterruptedError,
@@ -82,6 +83,7 @@ from agentchat.backends import (  # noqa: E402
 )
 from agentchat.executor import (  # noqa: E402
     CURRENT_TASK_ID,
+    AgentQuery,
     ExecutorClient,
     GatewayMessage,
     GatewayTask,
@@ -5589,6 +5591,55 @@ def run_single_agent(
             )
 
         return None
+
+    @executor.on_agent_query
+    async def handle_agent_query(query: AgentQuery) -> dict[str, Any]:
+        """Answer agent-owned LLM work on THIS agent's own seat.
+
+        A dumb pipe, per CLAUDE.md: the backend owns the prompts and the
+        decision that this work belongs to the agent. All this does is run
+        the completion on whatever model the agent already pays for and hand
+        back the text, the model that ran, and the usage.
+
+        Deliberately `generate()` and not `generate_quick()`. generate_quick
+        bypasses the CLI to call the Anthropic SDK with a hardcoded Haiku and
+        ANTHROPIC_API_KEY — which would reintroduce exactly the API-key
+        billing and Claude lock this path exists to remove. generate() is the
+        seat.
+
+        No directives, no history, no tools: the point is that this costs
+        roughly what the platform API call it replaces cost, not what a full
+        turn costs.
+        """
+        logger.info(
+            "[%s] Agent query %s (%s, tier=%s, max_tokens=%s)",
+            executor_key, query.id, query.label, query.tier, query.max_tokens,
+        )
+
+        # Scope both overrides to THIS query. The contextvars are snapshotted
+        # per asyncio task, so a concurrent turn on the same backend instance
+        # is unaffected.
+        if query.max_tokens:
+            MAX_TOKENS_OVERRIDE.set(query.max_tokens)
+
+        # `deep` asks for the strong end of whatever this seat offers. Only
+        # applied when the operator configured a deep model for this agent —
+        # never a hardcoded model id, which would re-lock the provider.
+        deep_model = os.getenv("AGENTGRAM_DEEP_MODEL")
+        if query.tier == "deep" and deep_model:
+            MODEL_OVERRIDE.set(deep_model)
+
+        result = await backend.generate(query.system_prompt, query.user_content)
+
+        logger.info(
+            "[%s] Agent query %s answered by %s in %.1fs",
+            executor_key, query.id, result.model, result.elapsed_seconds,
+        )
+        return {
+            "text": result.text or "",
+            "model": result.model,
+            "usage": result.usage or {},
+        }
 
     @executor.on_scope_request
     async def handle_scope_request(sr: "ScopeRequest") -> dict[str, Any] | None:

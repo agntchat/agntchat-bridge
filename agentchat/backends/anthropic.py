@@ -340,7 +340,7 @@ class AnthropicBackend(ModelBackend):
         try:
             response = await self._client.messages.create(
                 model=self._request_model(),
-                max_tokens=self._max_tokens,
+                max_tokens=self._request_max_tokens(),
                 system=self._cached_system(system_prompt),
                 messages=[{"role": "user", "content": user_prompt}],
                 **self._sampling_kwargs(),
@@ -400,7 +400,7 @@ class AnthropicBackend(ModelBackend):
         try:
             response = await self._client.messages.create(
                 model=self._request_model(),
-                max_tokens=self._max_tokens,
+                max_tokens=self._request_max_tokens(),
                 system=self._cached_system(system_prompt),
                 messages=api_messages,
                 **self._sampling_kwargs(),
@@ -463,7 +463,7 @@ class AnthropicBackend(ModelBackend):
         message = None
         async with self._client.messages.stream(
             model=self._request_model(),
-            max_tokens=self._max_tokens,
+            max_tokens=self._request_max_tokens(),
             system=self._cached_system(system_prompt),
             messages=api_messages,
             **self._sampling_kwargs(),
@@ -584,7 +584,7 @@ class AnthropicBackend(ModelBackend):
         if not on_progress or not hasattr(self._client.messages, "stream"):
             return await self._client.messages.create(
                 model=self._request_model(),
-                max_tokens=self._max_tokens,
+                max_tokens=self._request_max_tokens(),
                 system=self._cached_system(system_prompt),
                 messages=api_messages,
                 tools=tools,
@@ -600,7 +600,7 @@ class AnthropicBackend(ModelBackend):
 
         async with self._client.messages.stream(
             model=self._request_model(),
-            max_tokens=self._max_tokens,
+            max_tokens=self._request_max_tokens(),
             system=self._cached_system(system_prompt),
             messages=api_messages,
             tools=tools,

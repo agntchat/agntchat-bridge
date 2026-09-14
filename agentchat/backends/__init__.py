@@ -47,6 +47,15 @@ MODEL_OVERRIDE: contextvars.ContextVar[Union[str, None]] = contextvars.ContextVa
     "agentgram_model_override", default=None
 )
 
+# Per-request output cap, set for the duration of one agent query (see
+# AgentQuery in executor.py). Same contextvar isolation as MODEL_OVERRIDE:
+# a query asking for a 32K consolidation must not truncate against a
+# backend constructed with a 4096 default, and must not widen the cap for
+# a concurrent turn on the same backend instance.
+MAX_TOKENS_OVERRIDE: contextvars.ContextVar[Union[int, None]] = contextvars.ContextVar(
+    "agentgram_max_tokens_override", default=None
+)
+
 
 @dataclass(frozen=True)
 class MCPContext:
@@ -297,6 +306,15 @@ class ModelBackend(ABC):
         cache the result across turns.
         """
         return MODEL_OVERRIDE.get() or getattr(self, "_model", None)
+
+    def _request_max_tokens(self) -> Union[int, None]:
+        """Output cap to use for the current request.
+
+        The per-request MAX_TOKENS_OVERRIDE when set, else the backend's
+        configured cap. Read at request-build time — never cached across
+        requests, for the same reason as `_request_model()`.
+        """
+        return MAX_TOKENS_OVERRIDE.get() or getattr(self, "_max_tokens", None)
 
     @abstractmethod
     async def generate(
