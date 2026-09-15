@@ -2378,6 +2378,24 @@ def _is_final_delivery_tool(name: str) -> bool:
     return _normalized_tool_name(name) in _FINAL_DELIVERY_TOOLS
 
 
+def _pulse_completion_fields(result: Any) -> dict[str, Any]:
+    """Completion fields for a pulse turn.
+
+    A pulse is always a silent completion: its alert and carried-forward
+    state travel inside the `pulse_report` tool's result_data, and the
+    backend never posts a pulse's text anywhere. When `pulse_report` ran
+    (and the server accepted it) the task is ALREADY complete — the tool
+    completes it inside the MCP call — so the executor must not send a
+    second complete_task; `completed_via_tool` tells it to stand down.
+    Without it the follow-up call was refused as "ALREADY complete" on
+    every pulse, and carried whatever text the bridge had scraped up.
+    """
+    fields: dict[str, Any] = {"silent": True}
+    if _tool_was_called(result, "pulse_report"):
+        fields["completed_via_tool"] = "pulse_report"
+    return fields
+
+
 def _tool_was_called(result: Any, canonical_name: str) -> bool:
     """Return true if a native/MCP tool was called during this model run
     AND the call succeeded.
@@ -4486,11 +4504,6 @@ def run_single_agent(
                         len(remaining_text),
                     )
 
-            # Preserve full text for pulse tasks — the gateway needs the
-            # complete response (before tag stripping) to extract the proactive
-            # message and post it to the DM.
-            _full_text_for_completion = remaining_text
-
             # Parse result presentations and task requests from tool_use output
             remaining_text, presentations = parse_result_presentations(remaining_text)
 
@@ -4523,43 +4536,16 @@ def run_single_agent(
                     except Exception as e:
                         logger.warning("[%s] Failed to create task '%s': %s", executor_key, tr["title"], e)
 
-            # For pulse tasks, collect ALL text from the work conversation
-            # so the gateway can extract the proactive message. result.text only
-            # has the LAST output from Claude CLI (often just pulse_state tags),
-            # but the proactive message was output earlier in tool-use iterations.
-            if is_pulse:
-                # Fetch messages from the work conversation to get the full text.
-                # remaining_text is often just <pulse_state> tags from the
-                # last tool-use iteration — the actual proactive message was
-                # posted earlier. If this fetch fails we fall back to
-                # remaining_text, but log so we can diagnose silent "PULSE_OK"
-                #  suppressions when the real message vanished.
-                try:
-                    work_conv = task.work_conversation_id or task.conversation_id
-                    if work_conv:
-                        work_msgs = await executor._get(
-                            f"/api/conversations/{work_conv}/messages",
-                            params={"limit": "10"},
-                        )
-                        all_texts = []
-                        for wm in work_msgs.get("messages", []):
-                            if wm.get("senderId") == agent_id and wm.get("contentType") == "text":
-                                all_texts.append(wm.get("content", ""))
-                        summary_text = "\n\n".join(all_texts) if all_texts else remaining_text
-                    else:
-                        summary_text = remaining_text
-                except Exception as e:
-                    logger.warning(
-                        "[%s] Pulse work-conv fetch failed (task=%s, conv=%s), "
-                        "falling back to remaining_text: %s",
-                        executor_key,
-                        task.id,
-                        task.work_conversation_id or task.conversation_id,
-                        e,
-                    )
-                    summary_text = remaining_text
-            else:
-                summary_text = remaining_text
+            # A pulse finishes through the server-side `pulse_report` tool;
+            # the backend reads the alert and the carried-forward state from
+            # that tool's result_data, never from text. The bridge therefore
+            # has nothing to gather: the summary is this run's own final
+            # text, for bookkeeping only. (It used to join the last 10 agent
+            # messages of the work conversation here — a conversation seeded
+            # from the agent's pulse DM tail — so a 2026-05-03 "PULSE_OK
+            # <pulse_state>" and a May "task timed out" bubble rode along as
+            # the completion of every 2026-09-15 pulse. Botty, 4412 runs.)
+            summary_text = remaining_text
 
             completion_result: dict[str, Any] = {
                 "summary": summary_text[:MAX_SUMMARY_CHARS] if summary_text else result.text[:MAX_SUMMARY_CHARS],
@@ -4574,9 +4560,11 @@ def run_single_agent(
                 "stop_reason": result.stop_reason,
             }
 
-            if remaining_text.strip() and not is_pulse:
+            if is_pulse:
+                completion_result.update(_pulse_completion_fields(result))
+            elif remaining_text.strip():
                 completion_result["response"] = remaining_text[:MAX_REPLY_CHARS]
-            elif send_message_called and not is_pulse:
+            elif send_message_called:
                 completion_result["silent"] = True
                 completion_result["delivered_via_tool"] = "send_message"
 

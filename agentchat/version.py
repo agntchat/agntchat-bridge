@@ -253,4 +253,17 @@ different things.
 # GATED: the server checks this version before dispatching. An older bridge
 # has no handler, so a query would sit unanswered until the caller's timeout
 # — the floor turns that into an immediate, honest `agent_offline`.
-BRIDGE_VERSION = "2.10.0"
+# 2.10.1 — a pulse is completed by the server-side `pulse_report` tool
+# during the run; the bridge no longer completes it again afterwards. The
+# tool-use task path used to join the last 10 agent messages of the work
+# conversation into the completion summary "so the gateway could extract
+# the proactive message" — a text path the backend dropped when
+# pulse_report landed. That work conversation is seeded from the agent's
+# pulse DM tail, so every 2026-09-15 pulse for Botty sent a second
+# complete_task (refused: "ALREADY complete") carrying a May "task timed
+# out" bubble and a 2026-05-03 <pulse_state>. Now: pulse completions are
+# always silent (never a posted response), and a handler result carrying
+# `completed_via_tool` makes the executor stand down entirely. Not gated on
+# by the server — an older bridge keeps sending the refused duplicate —
+# so the roll is safe in either order.
+BRIDGE_VERSION = "2.10.1"

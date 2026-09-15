@@ -1245,6 +1245,23 @@ class ExecutorClient:
             else:
                 response_text = str(result)
 
+            # The run may already have closed the task through a server-side
+            # finisher tool (`pulse_report` completes a pulse inside the MCP
+            # call). Then there is nothing left to complete: a second
+            # complete_task is refused by the backend as "ALREADY complete",
+            # and before this guard it carried whatever text the handler had
+            # assembled as a summary — for a pulse, the seeded tail of the
+            # agent's pulse DM (a 2026-05-03 pulse_state and a May timeout
+            # bubble, every five minutes, Botty 2026-09-15).
+            completed_via_tool = extra.pop("completed_via_tool", None)
+            if completed_via_tool:
+                logger.info(
+                    "Task %s was completed by %s during the run — no bridge completion",
+                    task.task_id or task.id,
+                    completed_via_tool,
+                )
+                return
+
             # MCP complete_task / fail_task want the underlying Task.id
             # (task.task_id), NOT the gateway queue entry id (task.id).
             # The HTTP /accept and /progress endpoints below take the
@@ -1254,10 +1271,15 @@ class ExecutorClient:
             task_source = task.raw.get("task", {}).get("source")
             delivered_via_tool = extra.get("delivered_via_tool")
 
+            # A pulse never posts text: its message and state ride in
+            # pulse_report's result_data. Whatever the handler returned is
+            # bookkeeping at most — never promote it to a posted response.
+            if task_source == "pulse":
+                silent = True
+                response_text = None
+
             if not (response_text and response_text.strip()):
                 if task_source == "pulse":
-                    silent = True
-                    response_text = None
                     summary = None
                 elif silent and delivered_via_tool == "send_message":
                     response_text = None
