@@ -266,4 +266,13 @@ different things.
 # `completed_via_tool` makes the executor stand down entirely. Not gated on
 # by the server — an older bridge keeps sending the refused duplicate —
 # so the roll is safe in either order.
-BRIDGE_VERSION = "2.10.1"
+# 2.10.2 — the same stand-down for every task: when the model closed the
+# task itself through `complete_task` / `fail_task` during the run (the CLI
+# backends run their own tool loop, so the bridge only learns this from the
+# tally afterwards), the executor no longer sends its own completion a
+# second later. That call was refused as "ALREADY complete" on every
+# self-task Botty finished on 2026-09-15, carrying a different, non-silent
+# summary that would have double-posted had the refusal ever changed. Not
+# gated on by the server — an older bridge keeps sending the refused
+# duplicate — so the roll is safe in either order.
+BRIDGE_VERSION = "2.10.2"

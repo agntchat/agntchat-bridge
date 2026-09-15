@@ -2396,6 +2396,30 @@ def _pulse_completion_fields(result: Any) -> dict[str, Any]:
     return fields
 
 
+# Server-side finisher tools: a successful call completes (or fails) the
+# task inside the MCP call and posts the visible response itself.
+_FINISHER_TOOLS = ("complete_task", "fail_task")
+
+
+def _finisher_completion_fields(result: Any) -> dict[str, Any]:
+    """Completion fields for a non-pulse task whose run already closed the
+    task through `complete_task` / `fail_task`.
+
+    On the API backends the tool loop stops on a terminal tool
+    (`TERMINAL_TOOL_NAMES`), but the CLI backends run their own internal
+    loop and the bridge only sees the tool tally after the run. Without
+    this the executor sent its own `complete_task` a second later with a
+    different, non-silent summary — refused by the backend as "ALREADY
+    complete" on every self-task Botty finished on 2026-09-15. Same
+    stand-down as `_pulse_completion_fields`: `completed_via_tool` names
+    the finisher so `ExecutorClient._handle_task` sends nothing.
+    """
+    for name in _FINISHER_TOOLS:
+        if _tool_was_called(result, name):
+            return {"completed_via_tool": name}
+    return {}
+
+
 def _tool_was_called(result: Any, canonical_name: str) -> bool:
     """Return true if a native/MCP tool was called during this model run
     AND the call succeeded.
@@ -4567,6 +4591,12 @@ def run_single_agent(
             elif send_message_called:
                 completion_result["silent"] = True
                 completion_result["delivered_via_tool"] = "send_message"
+
+            # The model may have closed the task itself through a finisher
+            # tool; then the executor must not complete it again (the
+            # `response` above, if any, was already posted by that call).
+            if not is_pulse:
+                completion_result.update(_finisher_completion_fields(result))
 
             if presentations:
                 completion_result["structured_results"] = presentations
