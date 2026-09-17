@@ -275,4 +275,14 @@ different things.
 # summary that would have double-posted had the refusal ever changed. Not
 # gated on by the server — an older bridge keeps sending the refused
 # duplicate — so the roll is safe in either order.
-BRIDGE_VERSION = "2.10.2"
+# 2.10.3 — agent-query answers name their executor. `respond_to_agent_query`
+# and `fail_agent_query` posted `{text, model, usage}` / `{error}` with no
+# `executor_id`, unlike every other gateway POST, so the backend refused
+# every answer with 400 executor_id_required: each query ran to completion
+# on the seat, was thrown away, and the caller (memory extraction, soul
+# revision, ...) blocked out its full timeout. 100% of agent queries failed
+# from 2.10.0 through 2.10.2. Both POSTs now carry `executor_id`. Pairs with
+# the backend dispatching each query once (claimed) instead of twice; an
+# older bridge keeps failing the same way, so the roll is safe in either
+# order but this is the fix.
+BRIDGE_VERSION = "2.10.3"

@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
+from unittest.mock import AsyncMock, patch
 
 from agentchat.backends import MAX_TOKENS_OVERRIDE, ModelResult
-from agentchat.executor import AgentQuery
+from agentchat.executor import AgentQuery, ExecutorClient
 
 
 def test_from_dict_reads_the_camelcase_wire_shape():
@@ -138,3 +139,41 @@ def test_max_tokens_override_widens_a_narrow_backend_default():
         return MAX_TOKENS_OVERRIDE.get()
 
     assert asyncio.run(run()) == 32768
+
+
+@pytest.fixture
+def executor(base_url, agent_id, api_key):
+    client = ExecutorClient(base_url, agent_id, api_key, "agent-bridge")
+    client._executor_id = "executor-1"
+    return client
+
+
+@pytest.mark.asyncio
+async def test_respond_names_the_executor_that_answered(executor):
+    """The server claimed the query for this executor and refuses an answer
+    that does not say so (400 executor_id_required). Every query from 2.10.0
+    to 2.10.2 was answered and then thrown away because this key was missing.
+    """
+    with patch.object(executor, "_post", new=AsyncMock(return_value={})) as post:
+        await executor.respond_to_agent_query(
+            "q1", text="answered", model="gpt-5-codex", usage={"input_tokens": 1}
+        )
+
+    path = post.await_args.args[0]
+    body = post.await_args.kwargs["json"]
+    assert path == "/api/gateway/agent-queries/q1/respond"
+    assert body["executor_id"] == "executor-1"
+    assert body["text"] == "answered"
+    assert body["model"] == "gpt-5-codex"
+    assert body["usage"] == {"input_tokens": 1}
+
+
+@pytest.mark.asyncio
+async def test_fail_names_the_executor_too(executor):
+    with patch.object(executor, "_post", new=AsyncMock(return_value={})) as post:
+        await executor.fail_agent_query("q1", error="rate_limited")
+
+    path = post.await_args.args[0]
+    body = post.await_args.kwargs["json"]
+    assert path == "/api/gateway/agent-queries/q1/fail"
+    assert body == {"executor_id": "executor-1", "error": "rate_limited"}

@@ -934,8 +934,13 @@ class ExecutorClient:
         model: str | None = None,
         usage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Post the seat's answer. `model`/`usage` are what actually ran."""
-        body: dict[str, Any] = {"text": text}
+        """Post the seat's answer. `model`/`usage` are what actually ran.
+
+        Carries this executor's id like every other gateway POST: the server
+        claimed the query for this executor before pushing it, and refuses an
+        answer that does not name the claimant (400 executor_id_required).
+        """
+        body: dict[str, Any] = {"executor_id": self._executor_id, "text": text}
         if model:
             body["model"] = model
         if usage:
@@ -952,7 +957,7 @@ class ExecutorClient:
         model: str | None = None,
     ) -> dict[str, Any]:
         """Tell the server this seat could not answer, and why."""
-        body: dict[str, Any] = {"error": error}
+        body: dict[str, Any] = {"executor_id": self._executor_id, "error": error}
         if model:
             body["model"] = model
         return await self._post(
