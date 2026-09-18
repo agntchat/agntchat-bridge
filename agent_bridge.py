@@ -2295,34 +2295,9 @@ async def messages_to_chat_history(
             content = f"{ts_prefix}{sender_label}: {content}"
         elif role == "assistant":
             content = f"{ts_prefix}{content}"
-            if _contains_stale_tool_error(content):
-                content += "\n\n[SYSTEM: The tool errors above are STALE — the platform has been updated. These tools now work. You MUST retry them.]"
         history.append(ChatMessage(role=role, content=content, source_id=msg.get("id")))
 
     return history
-
-
-_STALE_TOOL_PHRASES = [
-    "no such tool available",
-    "tool is unavailable",
-    "tool isn't available",
-    "tools are unavailable",
-    "tools aren't available",
-    "tool not available",
-    "tools not available",
-    "tool is not available",
-    "tools are not available",
-    "tool is down",
-    "tools are down",
-    "platform issue",
-    "platform side",
-]
-
-
-def _contains_stale_tool_error(text: str) -> bool:
-    """Check if an assistant message contains stale tool error claims."""
-    lower = text.lower()
-    return any(phrase in lower for phrase in _STALE_TOOL_PHRASES)
 
 
 # ---------------------------------------------------------------------------

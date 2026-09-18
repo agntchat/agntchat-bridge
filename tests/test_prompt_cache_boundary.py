@@ -226,6 +226,47 @@ class TestSourceIdAndTail:
         assert "att-123" in history[0].content
 
     @pytest.mark.asyncio
+    async def test_stale_tool_claim_history_passes_through_unchanged(self):
+        # The bridge used to scan its own assistant-role history for
+        # "tool is unavailable"-style phrases and append a "[SYSTEM: ...
+        # STALE ... retry]" note. That rule is server-side now: the backend
+        # renders the note into `readableText` when it serves history to an
+        # agent. The bridge must pass the text through untouched — no
+        # phrase scanning, no injected note of its own.
+        raw = [
+            {"id": "m1", "content": "run it", "contentType": "text",
+             "senderId": "human-1", "senderName": "Tom", "senderType": "human"},
+            {"id": "m2",
+             "content": "Sorry, the calendar tool is unavailable right now (platform issue).",
+             "contentType": "text",
+             "senderId": "agent-1", "senderName": "Ada", "senderType": "agent"},
+        ]
+        history = await messages_to_chat_history(raw, "agent-1")
+        assert len(history) == 2
+        assert history[1].role == "assistant"
+        assert history[1].content.endswith(
+            "Sorry, the calendar tool is unavailable right now (platform issue)."
+        )
+        assert "STALE" not in history[1].content
+        assert "SYSTEM" not in history[1].content
+
+    @pytest.mark.asyncio
+    async def test_server_rendered_readable_text_carries_the_stale_note(self):
+        # When the backend renders the note into `readableText`, the bridge
+        # prefers it over raw `content` and the note reaches the model
+        # verbatim — that is the only path the note travels now.
+        raw = [
+            {"id": "m2",
+             "content": "the tool is unavailable",
+             "readableText": "the tool is unavailable\n\n[SYSTEM: stale — retry]",
+             "contentType": "text",
+             "senderId": "agent-1", "senderName": "Ada", "senderType": "agent"},
+        ]
+        history = await messages_to_chat_history(raw, "agent-1")
+        assert len(history) == 1
+        assert history[0].content.endswith("the tool is unavailable\n\n[SYSTEM: stale — retry]")
+
+    @pytest.mark.asyncio
     async def test_voice_note_transcript_reaches_the_attachment_block(self):
         # The backend transcribes voice notes server-side and folds the text
         # into the file message's content JSON. The bridge used to drop that

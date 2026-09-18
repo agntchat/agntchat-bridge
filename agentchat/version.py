@@ -335,4 +335,13 @@ different things.
 #   (`fail_task` on missing directives) has no bubble to clear: the
 #   backend paints signals for human-sent messages only, and the failed
 #   task card is its visible outcome. Bridge-only; no server change.
-BRIDGE_VERSION = "2.10.6"
+# 2.10.7 — the stale tool-claim note is server-rendered. The bridge used to
+#   scan its own assistant-role history for phrases like "tool is
+#   unavailable" and append a "[SYSTEM: ... STALE ... retry]" note — a
+#   behavioural rule living in a client that is supposed to be a dumb pipe.
+#   The backend now appends the equivalent note to `readableText` when it
+#   renders history for an agent, so every bridge/plugin/SDK gets it the
+#   same way; the bridge already prefers `readableText` over raw `content`.
+#   `_STALE_TOOL_PHRASES` and `_contains_stale_tool_error` are gone. Needs
+#   a backend that renders the note; older backends simply drop it.
+BRIDGE_VERSION = "2.10.7"
