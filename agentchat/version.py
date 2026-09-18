@@ -322,4 +322,17 @@ different things.
 #       the task-first short-circuit does not post an apology on top of the
 #       task card.
 # Bridge-only; no server change, safe to roll in either order.
-BRIDGE_VERSION = "2.10.5"
+# 2.10.6 — the directives-unavailable skip clears the thinking bubble.
+#   handle_message's no-promptDirectives early return (server directive
+#   pipeline down, no cached copy) returned without the signal cancel the
+#   other pre-model returns (skipMessage, skipTrivialMessage, triage TASK)
+#   already sent, so the InstantAgentSignal "thinking" bubble painted at
+#   send time ghosted for ~60s until the TimeoutServer sweep — the human
+#   saw an agent that started working, then nothing. The cancel is hoisted
+#   to a module-level `_cancel_signal_bubble(executor, msg)` and the skip
+#   goes through `_skip_directives_unavailable`, which cancels, logs the
+#   skipped conversation at WARNING, and returns None. The task path
+#   (`fail_task` on missing directives) has no bubble to clear: the
+#   backend paints signals for human-sent messages only, and the failed
+#   task card is its visible outcome. Bridge-only; no server change.
+BRIDGE_VERSION = "2.10.6"

@@ -1386,6 +1386,63 @@ def _parse_dm_blocks(reply: str) -> tuple[str, list[dict[str, str]]]:
 
 
 
+async def _cancel_signal_bubble(executor: Any, msg: GatewayMessage) -> None:
+    """Clear the backend's InstantAgentSignal "thinking" bubble.
+
+    When a message is queued for an agent the backend paints a signal
+    stream (`signal:{agent_id}:{int}`) so the bubble appears within
+    ~50ms of send. If we then early-return without invoking the LLM,
+    nothing else cancels it and it ghosts for ~60s until the
+    TimeoutServer sweep. The streaming endpoint cancels by senderId,
+    not stream_id, so any cancel from this agent clears it.
+
+    Every `return None` in handle_message that precedes the model call
+    MUST go through here — a skip the human cannot see reads as "started
+    working, then nothing".
+    """
+    if not msg.conversation_id:
+        return
+    try:
+        await executor.send_stream_update(
+            msg.conversation_id,
+            f"signal-cancel:{msg.id}",
+            status="cancelled",
+        )
+    except Exception:
+        pass  # best-effort; bubble would otherwise expire on its own
+
+
+async def _skip_directives_unavailable(
+    executor: Any, msg: GatewayMessage, conv_id: str | None, executor_key: str,
+) -> None:
+    """Skip a message turn that has no promptDirectives to run on (H4: no
+    fallback prompt).
+
+    The server's directive pipeline failing is a server incident, and
+    silence + an error log beats a reply improvised on a bridge-side
+    shadow prompt. The skip still has to clear the thinking bubble the
+    backend painted at send time, exactly like the skipMessage /
+    skipTrivialMessage returns do; before 2.10.6 this path returned
+    without cancelling and the bubble ghosted for ~60s.
+
+    Always returns None so the caller can `return await` it in place of
+    the model call.
+    """
+    logger.error(
+        "[%s] directives_unavailable for message %s (conv %s): no "
+        "promptDirectives in payload and no cached directives; "
+        "skipping the turn instead of improvising",
+        executor_key, msg.message_id, conv_id,
+    )
+    await _cancel_signal_bubble(executor, msg)
+    logger.warning(
+        "[%s] Skipped message %s in conversation %s: directives unavailable "
+        "(thinking bubble cleared, no model call)",
+        executor_key, msg.message_id, conv_id,
+    )
+    return None
+
+
 def _human_expects_reply(directives: dict[str, Any]) -> bool:
     """True when the human clearly expects a reply from THIS agent.
 
@@ -4820,27 +4877,6 @@ def run_single_agent(
         # defs. TTL-guarded — usually a no-op.
         await _maybe_refresh_resolved_tools()
 
-        async def _cancel_signal_bubble() -> None:
-            """Clear the backend's InstantAgentSignal "thinking" bubble.
-
-            When a message is queued for an agent the backend paints a signal
-            stream (`signal:{agent_id}:{int}`) so the bubble appears within
-            ~50ms of send. If we then early-return without invoking the LLM,
-            nothing else cancels it and it ghosts for ~60s until the
-            TimeoutServer sweep. The streaming endpoint cancels by senderId,
-            not stream_id, so any cancel from this agent clears it.
-            """
-            if not msg.conversation_id:
-                return
-            try:
-                await executor.send_stream_update(
-                    msg.conversation_id,
-                    f"signal-cancel:{msg.id}",
-                    status="cancelled",
-                )
-            except Exception:
-                pass  # best-effort; bubble would otherwise expire on its own
-
         # --- Read behavioral directives from server ---
         # Use fresh server directives when available. If the preloader timed
         # out (no directives in response), fall back to per-conversation cached
@@ -4856,13 +4892,7 @@ def run_single_agent(
         # pipeline failing is a server incident, and silence + an error log
         # beats a reply improvised on a bridge-side shadow prompt.
         if not directives.get("promptDirectives"):
-            logger.error(
-                "[%s] directives_unavailable for message %s (conv %s): no "
-                "promptDirectives in payload and no cached directives; "
-                "skipping the turn instead of improvising",
-                executor_key, msg.message_id, conv_id,
-            )
-            return None
+            return await _skip_directives_unavailable(executor, msg, conv_id, executor_key)
 
         behavioral_config = directives.get("behavioralConfig", {})
         _guardrail_config = (behavioral_config or {}).get("toolLoopGuardrails")
@@ -4891,7 +4921,7 @@ def run_single_agent(
         # --- Skip message if server directive says so (final decision, no override) ---
         if skip_message:
             logger.info("[%s] Skipping message per directive: %s", executor_key, skip_reason)
-            await _cancel_signal_bubble()
+            await _cancel_signal_bubble(executor, msg)
             return None
 
         # --- Trivial/engagement filter (server-computed decision) ---
@@ -4901,7 +4931,7 @@ def run_single_agent(
                 "[%s] Skipping message (%s): '%s'",
                 executor_key, skip_trivial_reason, msg.content[:60],
             )
-            await _cancel_signal_bubble()
+            await _cancel_signal_bubble(executor, msg)
             return None
 
         # --- CTA action handler (direct execution, no LLM needed) ---
@@ -4957,7 +4987,7 @@ def run_single_agent(
                 # TaskAssignmentWorker posts the structured task card; that card is
                 # the user-visible acknowledgement. Avoid adding a redundant canned
                 # text message to the conversation.
-                await _cancel_signal_bubble()
+                await _cancel_signal_bubble(executor, msg)
                 return None
             except Exception:
                 # Triage short-circuit is best-effort. If create_task fails, fall
