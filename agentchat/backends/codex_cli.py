@@ -839,6 +839,7 @@ class CodexCliBackend(ModelBackend):
                             idx = mcp_index_by_id.get(item_id)
                             if idx is not None:
                                 tool_uses[idx]["result"] = item.get("result")
+                                tool_uses[idx]["is_error"] = bool(item.get("error"))
                                 if item.get("error"):
                                     tool_uses[idx]["error"] = item.get("error")
                             # Same as command_execution: signal reasoning
@@ -1020,6 +1021,7 @@ class CodexCliBackend(ModelBackend):
                 name=tu.get("name", "tool"),
                 arguments=tu.get("arguments", {}) or {},
                 result=str(tu.get("result", "")) if tu.get("result") is not None else "",
+                is_error=bool(tu.get("is_error") or tu.get("error")),
             )
             for tu in cli_tool_uses
         ]

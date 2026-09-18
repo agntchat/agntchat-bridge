@@ -18,7 +18,14 @@ import os
 import time
 from typing import Any
 
-from . import TERMINAL_TOOL_NAMES, ChatMessage, ModelBackend, ModelResult, ToolCall
+from . import (
+    TERMINAL_TOOL_NAMES,
+    ChatMessage,
+    ModelBackend,
+    ModelResult,
+    ToolCall,
+    tool_result_is_error,
+)
 
 logger = logging.getLogger("agentchat.backends.openai")
 
@@ -303,6 +310,7 @@ class OpenAIBackend(ModelBackend):
                         arguments=args,
                         result=pre.message,
                         elapsed_seconds=0.0,
+                        is_error=True,
                     ))
                     api_messages.append({
                         "role": "tool",
@@ -330,6 +338,7 @@ class OpenAIBackend(ModelBackend):
                     arguments=args,
                     result=result_str,
                     elapsed_seconds=round(tc_elapsed, 2),
+                    is_error=tool_result_is_error(result_str),
                 ))
 
                 post = guardrail.after_call(tc.function.name, args, result_str)

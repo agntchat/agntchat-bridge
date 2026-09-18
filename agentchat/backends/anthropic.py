@@ -23,6 +23,7 @@ from . import (
     ModelBackend,
     ModelResult,
     ToolCall,
+    tool_result_is_error,
 )
 
 logger = logging.getLogger("agentchat.backends.anthropic")
@@ -797,6 +798,7 @@ class AnthropicBackend(ModelBackend):
                         arguments=block_args,
                         result=pre.message,
                         elapsed_seconds=0.0,
+                        is_error=True,
                     ))
                     tool_results.append({
                         "type": "tool_result",
@@ -826,6 +828,7 @@ class AnthropicBackend(ModelBackend):
                     arguments=block_args,
                     result=result_str,
                     elapsed_seconds=round(tc_elapsed, 2),
+                    is_error=tool_result_is_error(result_str),
                 ))
 
                 # Guardrail post-check: record outcome; append any warning as a

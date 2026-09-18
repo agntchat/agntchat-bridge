@@ -47,6 +47,7 @@ from . import (
     ModelResult,
     ProgressCallback,
     ToolCall,
+    tool_result_is_error,
 )
 from ._cli_utils import (
     ANSI_ESCAPE_RE,
@@ -438,6 +439,25 @@ def _mark_tool_results(tool_uses: list[dict], event: dict) -> None:
         tu = by_id.get(block.get("tool_use_id"))
         if tu is not None:
             tu["is_error"] = bool(block.get("is_error"))
+
+
+def _tool_calls_from_cli_tally(cli_tool_uses: list[dict]) -> list[ToolCall]:
+    """Minimal `ToolCall` records for the tool uses the CLI's internal loop
+    ran, in order. `result` / `elapsed_seconds` cannot be reconstructed from
+    the stream; the name, the captured arguments, and the server's verdict
+    (`is_error`, stamped by `_mark_tool_results`) are what the bridge reads
+    after the run."""
+    return [
+        ToolCall(
+            id=tu.get("id", ""),
+            name=tu.get("name", "tool"),
+            arguments=tu.get("arguments") if isinstance(tu.get("arguments"), dict) else {},
+            result="",
+            is_error=bool(tu.get("is_error")),
+        )
+        for tu in cli_tool_uses
+        if isinstance(tu, dict)
+    ]
 
 
 def _extract_cli_usage(event: dict) -> dict[str, int] | None:
@@ -1858,19 +1878,15 @@ class ClaudeCliBackend(ModelBackend):
             # The inner CLI ran the entire agentic loop. Hoist its tool_use
             # tally and turn count up so the bridge can log real numbers
             # instead of zeros. We can't reconstruct ToolCall.result/elapsed
-            # from the stream, so use minimal ToolCall records — the names
-            # and count are what surface in logs.
+            # from the stream, so use minimal ToolCall records — the names,
+            # count, and the server's verdict (`is_error`, stamped by
+            # `_mark_tool_results` from the tool_result turn) are what the
+            # bridge reads. Dropping the verdict here made a REFUSED
+            # end_turn(no_action_needed) read as chosen silence, and the
+            # answer the model wrote right after it was thrown away.
             cli_tool_uses = (result.metadata or {}).get("cli_tool_uses") or []
             cli_num_turns = int((result.metadata or {}).get("cli_num_turns") or 0)
-            tool_calls = [
-                ToolCall(
-                    id=tu.get("id", ""),
-                    name=tu.get("name", "tool"),
-                    arguments=tu.get("arguments") if isinstance(tu.get("arguments"), dict) else {},
-                    result="",
-                )
-                for tu in cli_tool_uses
-            ]
+            tool_calls = _tool_calls_from_cli_tally(cli_tool_uses)
             merged_metadata = dict(result.metadata or {})
             merged_metadata["cli_internal_loop"] = True
             return ModelResult(
@@ -2006,6 +2022,7 @@ class ClaudeCliBackend(ModelBackend):
                         arguments=call_args,
                         result=pre.message,
                         elapsed_seconds=0.0,
+                        is_error=True,
                     ))
                     tool_result_parts.append(
                         f"Tool `{call['name']}`: BLOCKED — {pre.message}"
@@ -2031,6 +2048,7 @@ class ClaudeCliBackend(ModelBackend):
                     arguments=call_args,
                     result=result_str,
                     elapsed_seconds=round(tc_elapsed, 2),
+                    is_error=tool_result_is_error(result_str),
                 ))
 
                 post = guardrail.after_call(call["name"], call_args, result_str)

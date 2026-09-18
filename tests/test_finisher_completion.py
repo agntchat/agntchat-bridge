@@ -11,19 +11,25 @@ loop, so the bridge only sees the finisher in the tally after the run.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from agent_bridge import _finisher_completion_fields
+from agentchat.backends import ModelResult, ToolCall
 from agentchat.executor import ExecutorClient, GatewayTask
 
 
 def _result(tool_names: list[str], *, errored: set[str] | None = None, cli: list[str] | None = None):
     errored = errored or set()
-    return SimpleNamespace(
-        tool_calls=[SimpleNamespace(name=n, is_error=(n in errored)) for n in tool_names],
+    return ModelResult(
+        text="",
+        model="test",
+        elapsed_seconds=0.0,
+        tool_calls=[
+            ToolCall(id=f"tu_{i}", name=n, arguments={}, result="", is_error=(n in errored))
+            for i, n in enumerate(tool_names)
+        ],
         metadata={"cli_tool_uses": [{"name": n} for n in (cli or [])]},
     )
 

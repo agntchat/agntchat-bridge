@@ -26,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import contextvars
+import json
 import os
 import time
 from abc import ABC, abstractmethod
@@ -134,13 +135,39 @@ class ChatMessage:
 
 @dataclass
 class ToolCall:
-    """Record of a single tool call during an agentic loop."""
+    """Record of a single tool call during an agentic loop.
+
+    `is_error` is the verdict on the call: True when the tool refused it,
+    the guardrail blocked it, or the executor reported a failure. The bridge
+    reads the tally after the run to decide what the turn DID — whether
+    `end_turn` chose silence, whether `send_message` delivered, whether a
+    finisher (`complete_task` / `fail_task` / `pulse_report`) already closed
+    the task — and a refused call must not count as any of those.
+    """
 
     id: str
     name: str
     arguments: dict[str, Any]
     result: str
     elapsed_seconds: float = 0.0
+    is_error: bool = False
+
+
+def tool_result_is_error(result_str: str) -> bool:
+    """Whether an executor result string reports a failed call.
+
+    `ToolExecutor.execute` never raises: a raised exception, an unknown
+    tool, a rejected placeholder argument, or the server's structured
+    refusal all come back as a JSON object with a top-level `error` key.
+    Anything that does not parse to such an object is a success.
+    """
+    if not result_str:
+        return False
+    try:
+        parsed = json.loads(result_str)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("error") is not None
 
 
 @dataclass

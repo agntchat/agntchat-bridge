@@ -285,4 +285,20 @@ different things.
 # the backend dispatching each query once (claimed) instead of twice; an
 # older bridge keeps failing the same way, so the roll is safe in either
 # order but this is the fix.
-BRIDGE_VERSION = "2.10.3"
+# 2.10.4 — `ToolCall` carries `is_error`, so a refused tool call is not read
+# as a successful one. The 2.9.3 fix filtered `is_error` on both tallies
+# (`result.tool_calls` and `metadata["cli_tool_uses"]`), but the dataclass
+# had no such field: `getattr(tc, "is_error", False)` was dead code, and
+# claude_cli rebuilt `tool_calls` from the CLI tally WITHOUT the verdict.
+# A refused `end_turn(no_action_needed)` — the backend refuses it when a
+# human addressed the agent — therefore still counted as chosen silence
+# and the bridge dropped the answer the model wrote right after it
+# ("end_turn (silent) was called but the model also produced N chars of
+# prose — dropping it"). The same dead filter let a failed or
+# guardrail-blocked `send_message` count as delivered (so the text was
+# never posted by the bridge either) and let a refused `complete_task` /
+# `fail_task` / `pulse_report` stand the executor down as if the task had
+# closed. Every backend now stamps the verdict at construction: the CLI
+# tally's `is_error`, the guardrail block, or the executor's `{"error":
+# ...}` result. Bridge-only; no server change.
+BRIDGE_VERSION = "2.10.4"
