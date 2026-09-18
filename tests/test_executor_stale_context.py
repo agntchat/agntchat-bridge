@@ -18,6 +18,9 @@ def executor(base_url, agent_id, api_key):
 
 @pytest.mark.asyncio
 async def test_returned_reply_uses_latest_seen_anchor_and_acks_stale_drop(executor):
+    """A 409 on the handler-returned reply is retried ONCE with the anchor
+    advanced past the messages the server named; a second 409 drops the
+    draft (still acked, still no notice)."""
     @executor.on_message
     async def handler(_msg):
         return "reply from stale snapshot"
@@ -42,9 +45,50 @@ async def test_returned_reply_uses_latest_seen_anchor_and_acks_stale_drop(execut
         "/api/gateway/messages/queue-1/ack",
         json={"executor_id": "executor-1"},
     )
-    send.assert_awaited_once()
-    assert send.await_args.args[:2] == ("conv-1", "reply from stale snapshot")
-    assert send.await_args.kwargs["last_seen_message_id"] == "latest-ctx-1"
+    assert send.await_count == 2
+    first, second = send.await_args_list
+    assert first.args[:2] == ("conv-1", "reply from stale snapshot")
+    assert first.kwargs["last_seen_message_id"] == "latest-ctx-1"
+    assert second.args[:2] == ("conv-1", "reply from stale snapshot")
+    assert second.kwargs["last_seen_message_id"] == "follow-up-1"
+
+
+@pytest.mark.asyncio
+async def test_returned_reply_retry_succeeds_posts_once_more_and_stops(executor):
+    """First 409 → one retry with the advanced anchor → success; nothing
+    further is sent and the message is acked exactly once."""
+    @executor.on_message
+    async def handler(_msg):
+        return {"content": "the answer", "metadata": {"model": "m"}}
+
+    msg = GatewayMessage(
+        id="queue-retry-ok",
+        message_id="trigger-retry-ok",
+        conversation_id="conv-1",
+        content="question",
+        latest_seen_message_id="latest-ctx-1",
+    )
+
+    stale = StaleContextError(
+        "stale", new_messages=[{"id": "peer-1", "insertedAt": "2026-09-18T10:00:00Z"}]
+    )
+
+    with (
+        patch.object(executor, "_post", new=AsyncMock(return_value={})) as post,
+        patch.object(executor, "send_message", new=AsyncMock(side_effect=[stale, {}])) as send,
+    ):
+        await executor._handle_message(msg)
+
+    post.assert_awaited_once_with(
+        "/api/gateway/messages/queue-retry-ok/ack",
+        json={"executor_id": "executor-1"},
+    )
+    assert send.await_count == 2
+    first, second = send.await_args_list
+    assert first.kwargs["last_seen_message_id"] == "latest-ctx-1"
+    assert second.args[:2] == ("conv-1", "the answer")
+    assert second.kwargs["metadata"] == {"model": "m"}
+    assert second.kwargs["last_seen_message_id"] == "peer-1"
 
 
 @pytest.mark.asyncio

@@ -88,6 +88,7 @@ from agentchat.executor import (  # noqa: E402
     GatewayMessage,
     GatewayTask,
     ScopeRequest,
+    send_with_stale_retry,
 )
 from agentchat.tools.executor import ToolExecutor  # noqa: E402
 from agentchat.tools.parsing import parse_tool_calls as _parse_tool_calls_shared  # noqa: E402
@@ -1275,7 +1276,11 @@ async def send_parsed_presentations(
         }
 
         try:
-            await executor.send_message(
+            # Same one-shot stale retry as the text reply: a peer bubble
+            # landing between the framing text and its card must not strand
+            # the card.
+            await send_with_stale_retry(
+                executor,
                 conversation_id,
                 content,
                 content_type="structured",
@@ -1283,9 +1288,16 @@ async def send_parsed_presentations(
                 content_structured=envelope,
                 correlation_id=correlation_id,
                 last_seen_message_id=last_seen_message_id,
+                log_label="ResultPresentation",
             )
             sent += 1
             logger.info("Sent ResultPresentation: %s (%d items)", title, item_count)
+        except StaleContextError as sce:
+            logger.info(
+                "Dropped stale ResultPresentation — %d new message(s) arrived during draft "
+                "(retry with advanced anchor was stale too)",
+                len(sce.new_messages),
+            )
         except Exception as e:
             logger.warning("Failed to send ResultPresentation: %s", e)
     return sent
@@ -2444,6 +2456,51 @@ def _tool_was_called(result: Any, canonical_name: str) -> bool:
             names.append(str(tu["name"]))
 
     return any(_normalized_tool_name(name) == canonical_name for name in names)
+
+
+def _post_parse_fallback_needed(
+    result: Any,
+    *,
+    reply: str | None,
+    presentations: list[Any] | None,
+    task_requests: list[Any] | None,
+    dm_blocks: list[Any] | None,
+    human_expects_reply: bool,
+    failed: bool,
+    ended_turn: bool = False,
+    sent_via_tool: bool = False,
+) -> bool:
+    """True when a turn parsed down to NOTHING and the human is waiting on
+    it, so the `emptyResponse` fallback should be posted.
+
+    The raw-result guard only catches a model that returned no text at all.
+    parse_result_presentations / parse_task_requests / _parse_dm_blocks can
+    strip a non-empty reply to empty (the whole answer was an envelope or a
+    DM tag that routed to nothing, or a CLI hiccup left only scaffolding);
+    if that leaves no text, no card, no routed DM and no task request,
+    silence reads as broken (onboarding conv 6c0cffa7). Shared by the
+    tool_use and single_shot branches — the latter had only the raw guard,
+    so a cards-only or task_request-only reply posted nothing.
+
+    Not a fallback case: the turn already failed (the failure copy IS the
+    reply), the model deliberately ended its turn or delivered through
+    `send_message`, or it created a task — the task card is the
+    acknowledgement, and an apology on top of it reads as a second, broken
+    turn.
+    """
+    nothing_emitted = (
+        not (reply and reply.strip())
+        and not presentations
+        and not task_requests
+        and not dm_blocks
+    )
+    if not nothing_emitted:
+        return False
+    if not human_expects_reply or failed or ended_turn or sent_via_tool:
+        return False
+    if _tool_was_called(result, "create_task"):
+        return False
+    return True
 
 
 def _tool_call_arguments(result: Any, canonical_name: str) -> dict[str, Any] | None:
@@ -5228,29 +5285,20 @@ def run_single_agent(
                         log_label=" [tool_use]",
                     )
 
-            # Re-apply the empty-reply guard AFTER parsing. The check at the raw
-            # result.text only catches a model that returned nothing at all. But
-            # parse_result_presentations / parse_task_requests / _parse_dm_blocks
-            # can strip a non-empty reply down to empty (the model wrapped its
-            # whole answer in an envelope/DM tag that then routed to nothing, or
-            # a CLI hiccup left only scaffolding). If that leaves NOTHING to post
-            # — no text, no cards, no routed DMs, no tasks — and the human is
-            # waiting on this agent, silence reads as broken. Emit the same
-            # graceful fallback rather than cancelling the turn. (Observed in
-            # onboarding conv 6c0cffa7: human said "Just chatting so far", the
-            # run acknowledged, and nothing was ever posted.)
-            nothing_emitted = (
-                not (reply and reply.strip())
-                and not presentations
-                and not _tu_task_requests
-                and not tu_dm_blocks
-            )
-            if (
-                nothing_emitted
-                and human_expects_reply
-                and not _tu_failed
-                and not _tu_ended_turn
-                and not _tu_sent_via_tool
+            # Re-apply the empty-reply guard AFTER parsing (see
+            # _post_parse_fallback_needed): a reply that parsed down to
+            # nothing at all, with the human waiting, gets the graceful
+            # fallback rather than a cancelled turn.
+            if _post_parse_fallback_needed(
+                result,
+                reply=reply,
+                presentations=presentations,
+                task_requests=_tu_task_requests,
+                dm_blocks=tu_dm_blocks,
+                human_expects_reply=human_expects_reply,
+                failed=_tu_failed,
+                ended_turn=_tu_ended_turn,
+                sent_via_tool=_tu_sent_via_tool,
             ):
                 logger.warning(
                     "[%s] tool_use reply parsed to empty with nothing emitted but "
@@ -5278,15 +5326,20 @@ def run_single_agent(
                     # server-owned (HumanlikeDelivery + StaggeredBubbleWorker
                     # at the insert_message chokepoint) so bridge and WS/SDK
                     # agents get identical semantics (audit Theme 5.3).
-                    await executor.send_message(
-                        msg.conversation_id, reply,
+                    # A first 409 re-posts once with the anchor advanced
+                    # past the messages the server named; a second one
+                    # drops the draft (send_with_stale_retry).
+                    await send_with_stale_retry(
+                        executor, msg.conversation_id, reply,
                         metadata=msg_meta_out,
                         last_seen_message_id=msg.latest_seen_message_id or msg.message_id or None,
+                        log_label=f"{executor_key} tool_use",
                     )
                     await _stream_cb.complete()
                 except StaleContextError as sce:
                     logger.info(
-                        "[%s] Dropped stale tool_use reply — %d new message(s) arrived during draft",
+                        "[%s] Dropped stale tool_use reply — %d new message(s) arrived during draft "
+                        "(retry with advanced anchor was stale too)",
                         executor_key, len(sce.new_messages),
                     )
                     reply_post_failed = True
@@ -5545,6 +5598,32 @@ def run_single_agent(
         # phrase list. The send below may come back {suppressed: true} —
         # the client treats that as a successful no-op.
 
+        # Re-apply the empty-reply guard AFTER parsing (see
+        # _post_parse_fallback_needed). The raw guard above only sees the
+        # model's untouched text; a cards-only reply, or a task_request-only
+        # reply when task creation is disallowed, parses to empty here and
+        # used to post nothing with no fallback.
+        if _post_parse_fallback_needed(
+            result,
+            reply=reply,
+            presentations=presentations,
+            task_requests=_deferred_task_requests,
+            dm_blocks=dm_blocks,
+            human_expects_reply=human_expects_reply,
+            failed=_self_task_failed,
+            ended_turn=_tool_was_called(result, "end_turn"),
+            sent_via_tool=_tool_was_called(result, "send_message"),
+        ):
+            logger.warning(
+                "[%s] single_shot reply parsed to empty with nothing emitted but "
+                "human expects a reply — using fallback",
+                executor_key,
+            )
+            reply = error_msgs.get(
+                "emptyResponse",
+                "Sorry — I blanked on that one. Could you say that again?",
+            )
+
         # Send reply if there is one
         reply_post_failed = False
         if reply:
@@ -5565,15 +5644,20 @@ def run_single_agent(
             # StaggeredBubbleWorker at the insert_message chokepoint) so bridge
             # and WS/SDK agents get identical semantics (audit Theme 5.3).
             try:
-                await executor.send_message(
-                    msg.conversation_id, reply,
+                # A first 409 re-posts once with the anchor advanced past the
+                # messages the server named; a second one drops the draft
+                # (send_with_stale_retry).
+                await send_with_stale_retry(
+                    executor, msg.conversation_id, reply,
                     metadata=msg_meta_out,
                     last_seen_message_id=msg.latest_seen_message_id or msg.message_id or None,
+                    log_label=f"{executor_key} single_shot",
                 )
                 await _stream_cb.complete()
             except StaleContextError as sce:
                 logger.info(
-                    "[%s] Dropped stale reply — %d new message(s) arrived during draft",
+                    "[%s] Dropped stale reply — %d new message(s) arrived during draft "
+                    "(retry with advanced anchor was stale too)",
                     executor_key, len(sce.new_messages),
                 )
                 reply_post_failed = True

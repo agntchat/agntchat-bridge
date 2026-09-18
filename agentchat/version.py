@@ -301,4 +301,25 @@ different things.
 # closed. Every backend now stamps the verdict at construction: the CLI
 # tally's `is_error`, the guardrail block, or the executor's `{"error":
 # ...}` result. Bridge-only; no server change.
-BRIDGE_VERSION = "2.10.4"
+# 2.10.5 — two reply-delivery gaps.
+#   (a) A stale reply is re-posted ONCE with an advanced anchor. The server's
+#       409 stale_context says "these messages arrived while you drafted" and
+#       attaches them; when they are peer bubbles or side notes the draft is
+#       still the answer to the human, but every reply site dropped it on
+#       the first 409. `send_with_stale_retry` (executor.py) now re-posts the
+#       same content with `last_seen_message_id` moved past the newest
+#       attached message; a second 409 drops the draft exactly as before
+#       ("Dropped stale ..." log lines are kept). Used by the tool_use and
+#       single_shot replies, ResultPresentation cards, and the executor's
+#       handler-returned reply. The hidden thread redirect is untouched —
+#       the server exempts EndTurn from the gate.
+#   (b) single_shot gets the post-parse "nothing emitted" guard the tool_use
+#       branch already had (`_post_parse_fallback_needed`, one helper for
+#       both): a reply that parsed down to empty — cards only, or a
+#       task_request-only reply when task creation is disallowed — posted
+#       nothing with no fallback while the human waited. A successful
+#       `create_task` now counts as something emitted in both branches, so
+#       the task-first short-circuit does not post an apology on top of the
+#       task card.
+# Bridge-only; no server change, safe to roll in either order.
+BRIDGE_VERSION = "2.10.5"
