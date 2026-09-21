@@ -167,6 +167,24 @@ def _fit_kwargs_to_method(method: Any, executor_method: str, kw_args: dict[str, 
     return fitted
 
 
+def _note_ignored_arguments(result_str: str, ignored: list[str]) -> str:
+    """Tell the model which of its arguments this tool did not accept."""
+    note = (
+        "arguments not accepted by this tool were ignored: "
+        + ", ".join(ignored)
+        + " — nothing was done with them; use the tool that takes them if that was needed"
+    )
+    try:
+        parsed = json.loads(result_str)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        parsed["_ignored_arguments"] = ignored
+        parsed["_note"] = note
+        return json.dumps(parsed, default=str)
+    return f"{result_str}\n\n[note: {note}]"
+
+
 class ToolExecutor:
     """Executes tool calls by dispatching to ExecutorClient methods.
 
@@ -402,13 +420,22 @@ class ToolExecutor:
             if injected_key in arguments and injected_key not in kw_args:
                 kw_args[injected_key] = arguments[injected_key]
 
+        offered = set(kw_args)
         kw_args = _fit_kwargs_to_method(method, executor_method, kw_args)
+        # Arguments the SDK method could not take. The model is told, in the
+        # result, which of its arguments went nowhere — a silent drop reads
+        # as success: Gmail passed `message` to find_or_create_dm on
+        # 2026-09-21, the thread opened, the words were dropped here, and
+        # the task closed as "pinged Kal, no answer yet".
+        ignored = sorted(offered - set(kw_args)) if executor_method != "complete_task" else []
 
         result: Any = None
         call_failed = False
         try:
             result = await method(**kw_args)
             result_str = _serialize(result)
+            if ignored:
+                result_str = _note_ignored_arguments(result_str, ignored)
         except Exception as e:
             logger.warning("Tool %s failed: %s", tool_name, e)
             result_str = json.dumps({"error": str(e)})

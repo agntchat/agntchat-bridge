@@ -382,4 +382,14 @@ different things.
 # turn keeps; the bridge trims what it rendered to the newest that many
 # before the cache boundary. Additive: an older bridge ignores the key and
 # renders its whole anchored window as before.
-BRIDGE_VERSION = "2.11.6"
+# 2.11.7 — a dropped argument is reported, and a thread can open with its
+# first line. (a) `_fit_kwargs_to_method` (2.11.3) dropped arguments the SDK
+# method could not take and only logged it; the model read the clean result
+# as success. Gmail passed `message` to find_or_create_dm on 2026-09-21: the
+# thread opened, the words went nowhere, and the task closed as "pinged Kal,
+# no answer yet" over an empty thread. The tool result now carries
+# `_ignored_arguments` and a note. (b) `ExecutorClient.find_or_create_dm`
+# takes `message`, posted in the request body; the backend posts it into the
+# thread as the caller. Additive: an older backend ignores the field, and an
+# older bridge still drops it — with the note from (a) once it has this.
+BRIDGE_VERSION = "2.11.7"

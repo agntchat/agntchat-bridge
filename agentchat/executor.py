@@ -1934,8 +1934,12 @@ class ExecutorClient:
         source_message_id: str | None = None,
         topic: str | None = None,
         goal: str | None = None,
+        message: str | None = None,
     ) -> dict[str, Any]:
         """Find or create a DM conversation with one or more other participants.
+
+        `message` is an opening line the server posts into the thread as this
+        agent in the same call (bridge 2.11.7; older servers ignore it).
 
         Returns the conversation object (with members).
         Use conversation["id"] to send messages to the DM.
@@ -1963,6 +1967,8 @@ class ExecutorClient:
             body["threadTopic"] = topic
         if goal:
             body["threadGoal"] = goal
+        if message:
+            body["message"] = message
         return await self._post("/api/conversations/dm", json=body)
 
     async def get_messages(
