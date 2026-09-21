@@ -57,6 +57,15 @@ MAX_TOKENS_OVERRIDE: contextvars.ContextVar[Union[int, None]] = contextvars.Cont
     "agentgram_max_tokens_override", default=None
 )
 
+# Per-turn reasoning effort, set by the bridge from the server-stamped
+# `turnOverride` on a message (an "auto" agent's tier pick — the backend's
+# `Agentchat.Agents.AutoModel`). Same contextvar isolation as MODEL_OVERRIDE;
+# only the claude_cli backend reads it (`--effort`), the others have no such
+# knob. None = the backend's configured effort.
+EFFORT_OVERRIDE: contextvars.ContextVar[Union[str, None]] = contextvars.ContextVar(
+    "agentgram_effort_override", default=None
+)
+
 
 @dataclass(frozen=True)
 class MCPContext:

@@ -74,6 +74,7 @@ from agentchat.auth import TokenManager  # noqa: E402
 from agentchat.errors import AgentChatError, AuthError, StaleContextError  # noqa: E402
 from agentchat.backends import (  # noqa: E402
     MAX_TOKENS_OVERRIDE,
+    EFFORT_OVERRIDE,
     MODEL_OVERRIDE,
     BackendAuthError,
     BackendInterruptedError,
@@ -4868,6 +4869,26 @@ def run_single_agent(
         # beats a reply improvised on a bridge-side shadow prompt.
         if not directives.get("promptDirectives"):
             return await _skip_directives_unavailable(executor, msg, conv_id, executor_key)
+
+        # --- Per-turn model pick for an "auto" agent (server-decided) ---
+        # The backend's AutoModel stamped the model and effort this turn runs
+        # on; set the same contextvars the task path sets from
+        # task.metadata.model_override. Scoped to this handler task — the
+        # executor runs every message in its own asyncio task, which snapshots
+        # the context — so it never leaks into a concurrent or later turn.
+        _turn_override = msg.turn_override if isinstance(msg.turn_override, dict) else None
+        if _turn_override:
+            _to_model = _turn_override.get("model")
+            _to_effort = _turn_override.get("effort")
+            if isinstance(_to_model, str) and _to_model:
+                MODEL_OVERRIDE.set(_to_model)
+            if isinstance(_to_effort, str) and _to_effort:
+                EFFORT_OVERRIDE.set(_to_effort)
+            logger.info(
+                "[%s] turn override: model=%s effort=%s tier=%s (%s)",
+                executor_key, _to_model, _to_effort,
+                _turn_override.get("tier"), _turn_override.get("source"),
+            )
 
         behavioral_config = directives.get("behavioralConfig", {})
         _guardrail_config = (behavioral_config or {}).get("toolLoopGuardrails")

@@ -262,6 +262,12 @@ class GatewayMessage:
     # and creates a self-task directly so the work runs in a focused
     # sub-conversation instead of inline.
     message_triage: dict[str, Any] | None = None
+    # Server-computed per-turn model pick for an agent whose model_config.model
+    # is "auto" (Agentchat.Agents.AutoModel): {"model": str, "effort": str,
+    # "tier": 1..3, "source": "turn_class"|"default"}. `model` is already the
+    # id this runtime expects (Bedrock profile etc.). The bridge sets the
+    # MODEL_OVERRIDE / EFFORT_OVERRIDE contextvars from it for this turn only.
+    turn_override: dict[str, Any] | None = None
     # The active Task this message is being processed under, when it arrives
     # inside a task work conversation. The backend serializes `activeTaskId`
     # on queued messages so the bridge can thread it into tool context — this
@@ -294,6 +300,7 @@ class GatewayMessage:
             recent_messages=d.get("recentMessages") or [],
             latest_seen_message_id=d.get("latestSeenMessageId"),
             message_triage=d.get("messageTriage"),
+            turn_override=d.get("turnOverride"),
             active_task_id=d.get("activeTaskId"),
             raw=d,
         )

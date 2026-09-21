@@ -36,6 +36,7 @@ from typing import Any
 import logging
 
 from . import (
+    EFFORT_OVERRIDE,
     MCP_CONTEXT,
     BackendAuthError,
     BackendHealth,
@@ -1042,8 +1043,12 @@ class ClaudeCliBackend(ModelBackend):
             cmd.extend(["--model", _model])
         if self._skip_permissions:
             cmd.append("--dangerously-skip-permissions")
-        if self._effort:
-            cmd.extend(["--effort", self._effort])
+        # The per-turn EFFORT_OVERRIDE (an "auto" agent's tier pick, stamped by
+        # the server on the message) wins over the configured effort for this
+        # invocation only — same scoping as the model override above.
+        _effort = self._request_effort()
+        if _effort:
+            cmd.extend(["--effort", _effort])
         if self._max_turns:
             cmd.extend(["--max-turns", str(self._max_turns)])
         if self._fallback_model:
@@ -1129,6 +1134,16 @@ class ClaudeCliBackend(ModelBackend):
             source_message_id=source_message_id,
             last_seen_message_id=last_seen_message_id,
         ))
+
+    def _request_effort(self) -> str | None:
+        """Effort for the current request: the per-turn override when the server
+        stamped one and it is a level the CLI accepts, else the configured one."""
+        override = EFFORT_OVERRIDE.get()
+        if override in ("low", "medium", "high", "max"):
+            return override
+        if override:
+            logger.warning("Ignoring invalid per-turn effort %r", override)
+        return self._effort
 
     async def generate(
         self,

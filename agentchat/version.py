@@ -344,4 +344,12 @@ different things.
 #   same way; the bridge already prefers `readableText` over raw `content`.
 #   `_STALE_TOOL_PHRASES` and `_contains_stale_tool_error` are gone. Needs
 #   a backend that renders the note; older backends simply drop it.
-BRIDGE_VERSION = "2.10.7"
+# 2.11.0 — per-turn model and effort from the message. An agent whose
+# model_config.model is "auto" gets a server-picked `turnOverride`
+# ({model, effort, tier, source}, Agentchat.Agents.AutoModel) on each
+# queued message; the bridge sets MODEL_OVERRIDE and the new
+# EFFORT_OVERRIDE contextvars from it, scoped to that turn, and the
+# claude_cli backend reads the effort into `--effort` per invocation.
+# Additive: a 2.10.x bridge ignores the key and runs an auto agent on the
+# startup model the serializer resolved.
+BRIDGE_VERSION = "2.11.0"
