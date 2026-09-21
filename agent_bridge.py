@@ -4973,7 +4973,7 @@ def run_single_agent(
                     "[%s] MessageTriage=TASK (source=%s) — short-circuit self-task: %s",
                     executor_key, triage_source, triage_title,
                 )
-                await executor.create_task(
+                _created = await executor.create_task(
                     msg.conversation_id,
                     triage_title,
                     description=msg.content or triage_title,
@@ -4985,11 +4985,24 @@ def run_single_agent(
                     },
                     active_conversation_id=msg.conversation_id,
                 )
-                # TaskAssignmentWorker posts the structured task card; that card is
-                # the user-visible acknowledgement. Avoid adding a redundant canned
-                # text message to the conversation.
-                await _cancel_signal_bubble(executor, msg)
-                return None
+                if isinstance(_created, dict) and _created.get("status") == "duplicate_detected":
+                    # WriteGuard refused the self-task as a duplicate of a recent
+                    # one (a 409 the client hands back as a payload, not an
+                    # error). No task card is coming, so this is NOT an
+                    # acknowledgement: fall through and answer the message in
+                    # the turn. Until 2026-09-21 this path returned here and the
+                    # human's message was acked with nothing at all — a "try
+                    # that again" after a finished task went unanswered.
+                    logger.info(
+                        "[%s] MessageTriage self-task refused as a duplicate — answering in the turn",
+                        executor_key,
+                    )
+                else:
+                    # TaskAssignmentWorker posts the structured task card; that
+                    # card is the user-visible acknowledgement. Avoid adding a
+                    # redundant canned text message to the conversation.
+                    await _cancel_signal_bubble(executor, msg)
+                    return None
             except Exception:
                 # Triage short-circuit is best-effort. If create_task fails, fall
                 # through to the normal LLM path so the user still gets a reply.

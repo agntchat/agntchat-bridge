@@ -363,4 +363,6 @@ different things.
 # `ExecutorClient.complete_task` does not take; the first completion attempt
 # raised and the model retried without it. Extras fold into `result_data`
 # for complete_task and are dropped (logged) elsewhere.
-BRIDGE_VERSION = "2.11.3"
+# 2.11.4 — a triage self-task refused by WriteGuard as a duplicate no
+# longer ends the turn silently; the message is answered in the turn.
+BRIDGE_VERSION = "2.11.4"
