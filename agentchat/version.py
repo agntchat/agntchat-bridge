@@ -358,4 +358,9 @@ different things.
 # 2.11.2 — the task handler reads `metadata.effort_override` alongside
 # `model_override`: a triage self-task created for an "auto" agent carries
 # the tier's effort as well as its model.
-BRIDGE_VERSION = "2.11.2"
+# 2.11.3 — tool kwargs are fitted to the SDK method's signature. The
+# `complete-task` schema carries `criteria_met`, which
+# `ExecutorClient.complete_task` does not take; the first completion attempt
+# raised and the model retried without it. Extras fold into `result_data`
+# for complete_task and are dropped (logged) elsewhere.
+BRIDGE_VERSION = "2.11.3"

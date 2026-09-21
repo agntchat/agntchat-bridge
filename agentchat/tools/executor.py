@@ -128,6 +128,45 @@ def _sanitize_tool_output(text: str) -> str:
     return _TOOL_RESULT_PRESENTATION_RE.sub("", text)
 
 
+def _fit_kwargs_to_method(method: Any, executor_method: str, kw_args: dict[str, Any]) -> dict[str, Any]:
+    """Drop kwargs the SDK method cannot take, instead of TypeError-ing the call.
+
+    The tool schema is the backend's; the method signature is the SDK's. When
+    the schema grows a property the SDK method has not learned (the
+    `complete-task` schema carries `criteria_met`, `ExecutorClient.complete_task`
+    does not), forwarding it raised "unexpected keyword argument" and the model
+    had to retry without it — a wasted round trip on the one call that ends a
+    task. For `complete_task` the extras are folded into `result_data` so the
+    backend still receives them; elsewhere they are logged and dropped.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return kw_args
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kw_args
+    accepted = {name for name, p in params.items() if p.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY,
+    )}
+    extras = {k: v for k, v in kw_args.items() if k not in accepted}
+    if not extras:
+        return kw_args
+    fitted = {k: v for k, v in kw_args.items() if k in accepted}
+    if executor_method == "complete_task" and "result_data" in accepted:
+        merged = dict(fitted.get("result_data") or {})
+        merged.update(extras)
+        fitted["result_data"] = merged
+        logger.info("[ToolExecutor] complete_task: folded %s into result_data", sorted(extras))
+    else:
+        logger.warning(
+            "[ToolExecutor] %s: dropping arguments the SDK method does not take: %s",
+            executor_method, sorted(extras),
+        )
+    return fitted
+
+
 class ToolExecutor:
     """Executes tool calls by dispatching to ExecutorClient methods.
 
@@ -362,6 +401,8 @@ class ToolExecutor:
         ):
             if injected_key in arguments and injected_key not in kw_args:
                 kw_args[injected_key] = arguments[injected_key]
+
+        kw_args = _fit_kwargs_to_method(method, executor_method, kw_args)
 
         result: Any = None
         call_failed = False
