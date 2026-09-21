@@ -4563,7 +4563,7 @@ def run_single_agent(
         await _task_stream_cb({"type": "stage", "stage": "calling_model", "force": True})
 
         logger.info("[%s] Calling %s for task (with %d context messages, mode=%s)",
-                     executor_key, backend.model_name, len(chat_messages) - 1, execution_mode)
+                     executor_key, backend.effective_model_name, len(chat_messages) - 1, execution_mode)
 
         _update_mcp_context(
             task.work_conversation_id or task.conversation_id or "",
@@ -5091,7 +5091,7 @@ def run_single_agent(
         error_msgs = (behavioral_config or {}).get("errorMessages", {})
 
         logger.info("[%s] Calling %s with %d messages of context (mode=%s)",
-                     executor_key, backend.model_name, len(chat_messages), execution_mode)
+                     executor_key, backend.effective_model_name, len(chat_messages), execution_mode)
 
         freshness_anchor = msg.latest_seen_message_id or msg.message_id or ""
         _update_mcp_context(

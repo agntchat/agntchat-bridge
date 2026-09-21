@@ -80,3 +80,18 @@ def test_claude_cli_reads_effort_override_per_request():
 
     assert contextvars.copy_context().run(invalid) == "medium"
     assert MODEL_OVERRIDE.get() is None
+
+
+def test_effective_model_name_reflects_the_override():
+    from agentchat.backends.claude_cli import ClaudeCliBackend
+
+    backend = ClaudeCliBackend.__new__(ClaudeCliBackend)
+    backend._model = "claude-sonnet-4-6"
+    assert backend.effective_model_name == "claude-cli (claude-sonnet-4-6)"
+
+    def inside():
+        MODEL_OVERRIDE.set("claude-haiku-4-5")
+        return backend.effective_model_name
+
+    assert contextvars.copy_context().run(inside) == "claude-cli (claude-haiku-4-5)"
+    assert backend.effective_model_name == "claude-cli (claude-sonnet-4-6)"

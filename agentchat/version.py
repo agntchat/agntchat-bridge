@@ -352,4 +352,7 @@ different things.
 # claude_cli backend reads the effort into `--effort` per invocation.
 # Additive: a 2.10.x bridge ignores the key and runs an auto agent on the
 # startup model the serializer resolved.
-BRIDGE_VERSION = "2.11.0"
+# 2.11.1 — the "Calling <backend>" journal line names the model the turn
+# actually runs on (`effective_model_name`), not the configured one; an
+# overridden turn read as the wrong model.
+BRIDGE_VERSION = "2.11.1"

@@ -333,6 +333,20 @@ class ModelBackend(ABC):
     def model_name(self) -> str:
         """Return the model identifier string."""
 
+    @property
+    def effective_model_name(self) -> str:
+        """`model_name` with the per-request override applied — what THIS call
+        runs on. `model_name` is the configured label ("claude-cli (x)"), and
+        logging it during an overridden turn read as the wrong model."""
+        override = self._request_model()
+        configured = getattr(self, "_model", None)
+        name = self.model_name
+        if not override or override in name:
+            return name
+        if configured and configured in name:
+            return name.replace(configured, override, 1)
+        return f"{name} -> {override}"
+
     def _request_model(self) -> Union[str, None]:
         """Model id to use for the current request.
 
