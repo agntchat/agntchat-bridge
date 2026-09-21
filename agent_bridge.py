@@ -4431,6 +4431,11 @@ def run_single_agent(
                 executor_key, task.task_id or task.id,
                 _model_override, backend.model_name,
             )
+        # An "auto" agent's triage self-task inherits the tier's effort too
+        # (Tasks.maybe_inherit_auto_tier stamps both). Same scoping.
+        _effort_override = task_meta.get("effort_override")
+        if isinstance(_effort_override, str) and _effort_override:
+            EFFORT_OVERRIDE.set(_effort_override)
 
         logger.info("[%s] === Handling task: %s (id=%s) ===", executor_key, task.title, task.task_id)
 

@@ -355,4 +355,7 @@ different things.
 # 2.11.1 — the "Calling <backend>" journal line names the model the turn
 # actually runs on (`effective_model_name`), not the configured one; an
 # overridden turn read as the wrong model.
-BRIDGE_VERSION = "2.11.1"
+# 2.11.2 — the task handler reads `metadata.effort_override` alongside
+# `model_override`: a triage self-task created for an "auto" agent carries
+# the tier's effort as well as its model.
+BRIDGE_VERSION = "2.11.2"
