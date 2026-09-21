@@ -376,4 +376,10 @@ different things.
 # Usage reports carry per-turn tool evidence (`turn`: tool_calls,
 # iterations, mcp_tools_attached, tool_search) and replies carry
 # `metadata.tool_calls`.
-BRIDGE_VERSION = "2.11.5"
+# 2.11.6 — per-turn history depth from the message. The server's
+# `directives.historyDepth` (Agentchat.Agents.PromptGate, from the turn
+# class's `history` level) says how many rendered history messages this
+# turn keeps; the bridge trims what it rendered to the newest that many
+# before the cache boundary. Additive: an older bridge ignores the key and
+# renders its whole anchored window as before.
+BRIDGE_VERSION = "2.11.6"
