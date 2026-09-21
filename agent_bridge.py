@@ -588,11 +588,30 @@ async def _record_cli_tool_uses(
         logger.debug("[%s] CLI tool-use telemetry POST failed: %s", executor_key, e)
 
 
+def _turn_stats(result: Any) -> dict[str, Any]:
+    """Per-turn tool evidence for the backend: how many tool calls the turn
+    made and whether the CLI session had the platform's tools reachable.
+    The backend counts toolless task turns per model from this — the
+    signal that would have caught the 2026-09-21 deferred-tools gap on the
+    first turn instead of the fourth."""
+    meta = getattr(result, "metadata", None) or {}
+    session = meta.get("cli_session_tools") or {}
+    stats: dict[str, Any] = {
+        "tool_calls": len(getattr(result, "tool_calls", None) or []),
+        "iterations": int(getattr(result, "iterations", 0) or 0),
+    }
+    if session:
+        stats["mcp_tools_attached"] = int(session.get("mcp") or 0)
+        stats["tool_search"] = bool(session.get("tool_search"))
+    return stats
+
+
 async def _report_usage(
     executor: Any,
     usage: dict[str, int],
     model: str | None,
     executor_key: str,
+    turn_stats: dict[str, Any] | None = None,
 ) -> None:
     """POST one LLM turn's token usage to the backend.
 
@@ -609,6 +628,8 @@ async def _report_usage(
     if not usage:
         return
     payload: dict[str, Any] = {"usage": usage, "model": model}
+    if turn_stats:
+        payload["turn"] = turn_stats
     task_id = CURRENT_TASK_ID.get()
     if task_id:
         payload["task_id"] = task_id
@@ -624,7 +645,10 @@ def _maybe_report_usage(executor: Any, result: Any, executor_key: str) -> None:
     if not usage:
         return
     asyncio.create_task(
-        _report_usage(executor, dict(usage), getattr(result, "model", None), executor_key)
+        _report_usage(
+            executor, dict(usage), getattr(result, "model", None), executor_key,
+            turn_stats=_turn_stats(result),
+        )
     )
 
 
@@ -5289,6 +5313,10 @@ def run_single_agent(
             msg_meta_out: dict[str, str] = {}
             if result and result.model:
                 msg_meta_out["model"] = result.model
+                # Tool evidence for the reply itself, so the backend can tell
+                # a reply that USED its tools from one that only talks about
+                # them (Agentchat.Agents.PhantomFailure).
+                msg_meta_out["tool_calls"] = len(result.tool_calls or [])
             if effective_backend:
                 msg_meta_out["backend"] = effective_backend
             msg_meta_out["stream_id"] = _msg_stream_id

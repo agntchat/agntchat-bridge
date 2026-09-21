@@ -262,6 +262,20 @@ class BackendRateLimitError(RuntimeError):
         self.reset_at = reset_at
 
 
+class BackendToolsUnavailableError(RuntimeError):
+    """The CLI session started without the platform's MCP tools reachable.
+
+    Claude Code's `system/init` event lists the tools a session has. MCP
+    tools arrive either attached (`mcp__<server>__<tool>` entries) or, for
+    models the CLI serves deferred tools to, behind the built-in `ToolSearch`
+    tool. A session with an MCP server configured but neither is a session
+    where the model will honestly report "I have no calendar tool" — which
+    reads to the human as a broken integration. Raised by the streaming
+    backend so the caller can respawn once and otherwise fail the turn
+    loudly instead of posting a toolless answer.
+    """
+
+
 class BackendInterruptedError(RuntimeError):
     """The model process was killed from outside before it could finish.
 

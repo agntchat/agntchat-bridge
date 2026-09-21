@@ -39,6 +39,7 @@ from . import (
     EFFORT_OVERRIDE,
     MCP_CONTEXT,
     BackendAuthError,
+    BackendToolsUnavailableError,
     BackendHealth,
     BackendInterruptedError,
     BackendRateLimitError,
@@ -275,6 +276,42 @@ def _has_gcp_credentials() -> bool:
             "gcloud",
             "application_default_credentials.json",
         )
+    )
+
+
+def _session_tools_from_init(event: dict[str, Any]) -> dict[str, Any]:
+    """Summarise a stream-json `system/init` event: what tools this session has."""
+    tools = [str(t) for t in (event.get("tools") or [])]
+    servers = event.get("mcp_servers") or []
+    return {
+        "total": len(tools),
+        "mcp": sum(1 for t in tools if t.startswith("mcp__")),
+        "tool_search": "ToolSearch" in tools,
+        "mcp_servers": [
+            {"name": s.get("name"), "status": s.get("status")} if isinstance(s, dict) else str(s)
+            for s in servers
+        ],
+        "model": event.get("model"),
+    }
+
+
+def _mcp_reachable(session_tools: dict[str, Any], expect_mcp: bool) -> tuple[bool, str]:
+    """Whether the platform's MCP tools can be used in this session.
+
+    Reachable when MCP tools are attached (`mcp__…` names) OR the built-in
+    ToolSearch is present (deferred tools load through it). Only enforced
+    when the caller configured an MCP server (`expect_mcp`); a session with
+    no MCP config has nothing to reach.
+    """
+    if not expect_mcp:
+        return True, "no MCP expected"
+    if session_tools.get("mcp", 0) > 0:
+        return True, "mcp tools attached"
+    if session_tools.get("tool_search"):
+        return True, "ToolSearch present"
+    return False, (
+        f"mcp_servers={session_tools.get('mcp_servers')} tools={session_tools.get('total')} "
+        "— no mcp__ tools and no ToolSearch"
     )
 
 
@@ -958,6 +995,15 @@ class ClaudeCliBackend(ModelBackend):
         "Grep",       # Search file contents (ripgrep)
         "WebFetch",   # Fetch a URL
         "WebSearch",  # Web search
+        # Reaches DEFERRED tools. Claude Code 2.1.x hands newer models their
+        # MCP tools as deferred entries that the model loads through this
+        # built-in; without it in an explicit `--tools` list the platform's
+        # 71 MCP tools are configured but unreachable, and the model truthfully
+        # answers "I have no calendar tool". Measured 2026-09-21 on the org
+        # host: Opus 5 made zero tool calls in four task turns and used
+        # ToolSearch → list_calendars the moment this was added. Sonnet 5 got
+        # the same tools attached directly and never noticed.
+        "ToolSearch",
     ]
 
     def _base_cmd(
@@ -1483,7 +1529,8 @@ class ClaudeCliBackend(ModelBackend):
     # ------------------------------------------------------------------
 
     async def _generate_streaming(
-        self, cmd: list[str], on_progress: ProgressCallback, prompt: str = ""
+        self, cmd: list[str], on_progress: ProgressCallback, prompt: str = "",
+        expect_mcp: bool = False,
     ) -> ModelResult:
         """Run CLI with --output-format stream-json for real-time events.
 
@@ -1543,11 +1590,17 @@ class ClaudeCliBackend(ModelBackend):
         # streaming bubble shows generic fallbacks like "Searching for '...'"
         # because the args dict is still empty at content_block_start time.
         _active_tool_use: dict[str, Any] | None = None
+        # What the CLI's `system/init` event said this session has. Recorded
+        # on the result for the usage report, and checked against
+        # `expect_mcp` so a session whose MCP tools are unreachable is
+        # aborted here instead of answering toolless.
+        _session_tools: dict[str, Any] = {}
+        _tools_unreachable = False
 
         try:
             async def read_stream():
                 nonlocal result_text, _last_delta_time, _accumulated_text, _result_error_subtype, _result_subtype, _result_is_error, _num_turns
-                nonlocal _active_tool_use, _usage, _result_model
+                nonlocal _active_tool_use, _usage, _result_model, _session_tools, _tools_unreachable
                 assert proc.stdout is not None
                 async for line in iter_event_lines(
                     proc.stdout, timeout=self._timeout, max_line=_STREAM_LIMIT
@@ -1562,6 +1615,21 @@ class ClaudeCliBackend(ModelBackend):
                         continue
 
                     event_type = event.get("type", "")
+
+                    if event_type == "system" and event.get("subtype") == "init":
+                        _session_tools = _session_tools_from_init(event)
+                        ok, why = _mcp_reachable(_session_tools, expect_mcp)
+                        logger.info(
+                            "CLI session tools: total=%s mcp=%s tool_search=%s servers=%s",
+                            _session_tools.get("total"), _session_tools.get("mcp"),
+                            _session_tools.get("tool_search"), _session_tools.get("mcp_servers"),
+                        )
+                        if not ok:
+                            _tools_unreachable = True
+                            logger.error("CLI session started with MCP tools unreachable: %s", why)
+                            _kill_process_group(proc)
+                            return
+                        continue
 
                     # Final result event — capture the text
                     if event_type == "result":
@@ -1713,6 +1781,12 @@ class ClaudeCliBackend(ModelBackend):
 
         elapsed = time.monotonic() - start
 
+        if _tools_unreachable:
+            raise BackendToolsUnavailableError(
+                "CLI session had an MCP server configured but neither attached MCP tools "
+                "nor ToolSearch — the model would have run toolless"
+            )
+
         if proc.returncode != 0:
             stderr_bytes = await proc.stderr.read() if proc.stderr else b""
             err_msg = stderr_bytes.decode().strip() if stderr_bytes else ""
@@ -1791,6 +1865,7 @@ class ClaudeCliBackend(ModelBackend):
                 "accumulated_text": ANSI_ESCAPE_RE.sub("", _accumulated_text).strip(),
                 "cli_tool_uses": _tool_uses,
                 "cli_num_turns": _num_turns,
+                "cli_session_tools": _session_tools,
             },
         )
 
@@ -1883,7 +1958,21 @@ class ClaudeCliBackend(ModelBackend):
             try:
                 start = time.monotonic()
                 if on_progress:
-                    result = await self._generate_streaming(cmd, on_progress, prompt)
+                    # One respawn when the session's MCP tools are unreachable
+                    # (a startup race the CLI does not wait out). A second
+                    # miss fails the turn loudly — a failed turn is recoverable,
+                    # a confident toolless answer is not.
+                    for attempt in (1, 2):
+                        try:
+                            result = await self._generate_streaming(
+                                cmd, on_progress, prompt, expect_mcp=bool(mcp_tools)
+                            )
+                            break
+                        except BackendToolsUnavailableError:
+                            if attempt == 2:
+                                raise
+                            logger.warning("MCP tools unreachable at session start; respawning CLI once")
+                            await asyncio.sleep(1.0)
                 else:
                     result = await self._generate_batch(cmd, prompt)
                 elapsed = time.monotonic() - start

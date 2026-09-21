@@ -365,4 +365,15 @@ different things.
 # for complete_task and are dropped (logged) elsewhere.
 # 2.11.4 — a triage self-task refused by WriteGuard as a duplicate no
 # longer ends the turn silently; the message is answered in the turn.
-BRIDGE_VERSION = "2.11.4"
+# 2.11.5 — deferred MCP tools are reachable and a toolless session is
+# refused. Claude Code 2.1.x hands newer models their MCP tools as deferred
+# entries behind the built-in ToolSearch; our explicit --tools list omitted
+# it, so whether a turn had its 71 platform tools depended on a startup
+# race (Opus 5 lost it four times out of four, Sonnet 5 never did).
+# ToolSearch is always passed; the system/init event is checked and a
+# session with an MCP server configured but neither attached mcp__ tools
+# nor ToolSearch is killed and respawned once, then fails the turn loudly.
+# Usage reports carry per-turn tool evidence (`turn`: tool_calls,
+# iterations, mcp_tools_attached, tool_search) and replies carry
+# `metadata.tool_calls`.
+BRIDGE_VERSION = "2.11.5"
