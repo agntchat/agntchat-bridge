@@ -392,4 +392,10 @@ different things.
 # takes `message`, posted in the request body; the backend posts it into the
 # thread as the caller. Additive: an older backend ignores the field, and an
 # older bridge still drops it — with the note from (a) once it has this.
-BRIDGE_VERSION = "2.11.7"
+# 2.11.8 — `complete_thread` carries `content` (the caller's contribution,
+# posted by the server before the wrap so the quality gate counts it), and
+# the ignored-arguments note is appended on FAILED calls too. Gmail's retry
+# "with content" on 2026-09-22 was dropped here and refused by the server
+# for having no content, with nothing telling the model why (thread
+# a8549772). Additive; an older backend ignores the field.
+BRIDGE_VERSION = "2.11.8"

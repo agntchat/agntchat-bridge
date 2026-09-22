@@ -25,3 +25,9 @@ def test_plain_text_results_get_a_trailing_note():
     out = _note_ignored_arguments("DM ready", ["message", "topic"])
     assert out.startswith("DM ready")
     assert "message, topic" in out
+
+
+def test_error_results_carry_the_note_too():
+    out = json.loads(_note_ignored_arguments(json.dumps({"error": "API error 422"}), ["content"]))
+    assert out["error"] == "API error 422"
+    assert out["_ignored_arguments"] == ["content"]

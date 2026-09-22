@@ -1901,8 +1901,13 @@ class ExecutorClient:
         summary: str,
         *,
         outcome: str = "resolved",
+        content: str | None = None,
     ) -> dict[str, Any]:
         """Mark an agent thread as resolved and relay the summary to its parent.
+
+        `content` is the caller's own contribution, posted into the thread
+        by the server before the wrap so the resolution quality gate counts
+        it (bridge 2.11.8; the MCP tool schema has carried it for longer).
 
         Idempotent — calling on an already-resolved thread is a no-op.
         Routes through the backend tool host (which calls into
@@ -1917,14 +1922,14 @@ class ExecutorClient:
             outcome: "resolved" (default), "agreed", "blocked", "deferred",
                 or "abandoned".
         """
-        return await self._post(
-            "/api/threads/complete",
-            json={
-                "threadId": thread_id,
-                "summary": summary,
-                "outcome": outcome,
-            },
-        )
+        body: dict[str, Any] = {
+            "threadId": thread_id,
+            "summary": summary,
+            "outcome": outcome,
+        }
+        if content:
+            body["content"] = content
+        return await self._post("/api/threads/complete", json=body)
 
     async def find_or_create_dm(
         self,

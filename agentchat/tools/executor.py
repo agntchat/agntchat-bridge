@@ -440,6 +440,11 @@ class ToolExecutor:
             logger.warning("Tool %s failed: %s", tool_name, e)
             result_str = json.dumps({"error": str(e)})
             call_failed = True
+            # On a failure the note matters MORE: Gmail's complete_thread
+            # retry "with content" was refused for having no content, and
+            # nothing told the model its `content` had been dropped here.
+            if ignored:
+                result_str = _note_ignored_arguments(result_str, ignored)
 
         # Skip verification when the backend returned a WriteGuard
         # duplicate-detected payload — no resource was created, the
