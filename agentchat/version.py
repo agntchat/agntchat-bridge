@@ -398,4 +398,11 @@ different things.
 # "with content" on 2026-09-22 was dropped here and refused by the server
 # for having no content, with nothing telling the model why (thread
 # a8549772). Additive; an older backend ignores the field.
-BRIDGE_VERSION = "2.11.8"
+# 2.11.9 — Gmail writes say which run they belong to. `send_email` and
+# `save_draft` take `run_context` (filled by the ToolExecutor from the turn,
+# never by the model) and send it as `X-Task-Id` / `X-Active-Conversation`.
+# The backend gates pulse email by the owner's email-autonomy mode; without
+# context it had to assume any call made while a pulse was in flight was the
+# pulse's, so a send the owner asked for in chat could be refused. Additive:
+# an older backend ignores the headers.
+BRIDGE_VERSION = "2.11.9"

@@ -429,6 +429,16 @@ class ToolExecutor:
         # the task closed as "pinged Kal, no answer yet".
         ignored = sorted(offered - set(kw_args)) if executor_method != "complete_task" else []
 
+        # SDK methods that take `run_context` get the turn's own task and
+        # conversation — never a model argument, so it is added after the
+        # ignored-arguments accounting. The Gmail writes send it as headers
+        # so the backend knows whether the call belongs to a pulse.
+        if "run_context" in inspect.signature(method).parameters:
+            kw_args["run_context"] = {
+                "task_id": self._context.get("task_id"),
+                "conversation_id": self._context.get("conversation_id"),
+            }
+
         result: Any = None
         call_failed = False
         try:

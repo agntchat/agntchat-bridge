@@ -2242,12 +2242,31 @@ class ExecutorClient:
             payload["reply_all"] = reply_all
         return payload
 
+    @staticmethod
+    def _run_context_headers(run_context: dict[str, Any] | None) -> dict[str, str] | None:
+        """Which run a Gmail write belongs to, as request headers.
+
+        The backend gates email during a pulse by the owner's email-autonomy
+        mode (`Agentchat.Agents.EmailAutonomy`). A REST call with no context
+        left it guessing from "is a pulse in flight?", which also caught a
+        chat turn the owner started while a pulse happened to run. The
+        ToolExecutor fills this from the turn it is executing."""
+        if not run_context:
+            return None
+        headers: dict[str, str] = {}
+        if run_context.get("task_id"):
+            headers["X-Task-Id"] = str(run_context["task_id"])
+        if run_context.get("conversation_id"):
+            headers["X-Active-Conversation"] = str(run_context["conversation_id"])
+        return headers or None
+
     async def send_email(
         self, body: str, to: str | None = None, subject: str | None = None, *,
         cc: list[str] | None = None, bcc: list[str] | None = None,
         content_type: str | None = None,
         reply_to_message_id: str | None = None,
         reply_all: bool | None = None,
+        run_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Send an email via Gmail. Body is passed through as-is.
 
@@ -2263,7 +2282,10 @@ class ExecutorClient:
             body, to, subject, cc=cc, bcc=bcc, content_type=content_type,
             reply_to_message_id=reply_to_message_id, reply_all=reply_all,
         )
-        return await self._post("/api/google/gmail/send", json=payload)
+        return await self._post(
+            "/api/google/gmail/send", json=payload,
+            extra_headers=self._run_context_headers(run_context),
+        )
 
     async def save_draft(
         self, body: str, to: str | None = None, subject: str | None = None, *,
@@ -2271,13 +2293,17 @@ class ExecutorClient:
         content_type: str | None = None,
         reply_to_message_id: str | None = None,
         reply_all: bool | None = None,
+        run_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Save an email as a draft in Gmail. Same contract as send_email."""
         payload = self._email_payload(
             body, to, subject, cc=cc, bcc=bcc, content_type=content_type,
             reply_to_message_id=reply_to_message_id, reply_all=reply_all,
         )
-        return await self._post("/api/google/gmail/drafts", json=payload)
+        return await self._post(
+            "/api/google/gmail/drafts", json=payload,
+            extra_headers=self._run_context_headers(run_context),
+        )
 
     async def get_draft(self, draft_id: str) -> dict[str, Any]:
         """Get a Gmail draft by ID. Used for post-action verification."""

@@ -85,3 +85,66 @@ class TestSendEmailPassthrough:
             )
             assert mock.call_args.args[0] == "/api/google/gmail/drafts"
             assert mock.call_args.kwargs["json"]["reply_to_message_id"] == "18c2f4a"
+
+
+class TestRunContextHeaders:
+    """Gmail writes carry the turn's task/conversation so the backend can tell
+    a pulse's send from one the owner asked for in chat (bridge 2.11.9)."""
+
+    @pytest.mark.asyncio
+    async def test_send_email_sends_run_context_headers(self, executor):
+        with patch.object(executor, "_post", new=AsyncMock(return_value={})) as mock:
+            await executor.send_email(
+                "Body", to="to@example.com", subject="Hi",
+                run_context={"task_id": "t-1", "conversation_id": "c-1"},
+            )
+            assert mock.call_args.kwargs["extra_headers"] == {
+                "X-Task-Id": "t-1",
+                "X-Active-Conversation": "c-1",
+            }
+
+    @pytest.mark.asyncio
+    async def test_save_draft_omits_empty_context(self, executor):
+        with patch.object(executor, "_post", new=AsyncMock(return_value={})) as mock:
+            await executor.save_draft(
+                "Body", to="to@example.com", subject="Hi",
+                run_context={"task_id": None, "conversation_id": "c-1"},
+            )
+            assert mock.call_args.kwargs["extra_headers"] == {"X-Active-Conversation": "c-1"}
+
+    @pytest.mark.asyncio
+    async def test_no_context_no_headers(self, executor):
+        with patch.object(executor, "_post", new=AsyncMock(return_value={})) as mock:
+            await executor.send_email("Body", to="to@example.com", subject="Hi")
+            assert mock.call_args.kwargs["extra_headers"] is None
+
+    @pytest.mark.asyncio
+    async def test_tool_executor_injects_turn_context(self, executor):
+        from agentchat.tools.executor import ToolExecutor
+
+        tools = [{
+            "name": "send_email",
+            "executorMethod": "send_email",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                "required": ["body"],
+            },
+        }]
+        te = ToolExecutor(
+            executor,
+            context={"task_id": "pulse-1", "conversation_id": "conv-1"},
+            resolved_tools=tools,
+        )
+        with patch.object(executor, "_post", new=AsyncMock(return_value={"message_id": "m1"})) as mock, \
+             patch("agentchat.tools.executor.verify_action", new=AsyncMock(return_value=None)):
+            result = await te.execute("send_email", {"to": "a@b.c", "subject": "S", "body": "B"})
+            assert mock.call_args.kwargs["extra_headers"] == {
+                "X-Task-Id": "pulse-1",
+                "X-Active-Conversation": "conv-1",
+            }
+            assert "_ignored_arguments" not in result
