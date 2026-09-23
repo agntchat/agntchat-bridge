@@ -58,11 +58,13 @@ from ._cli_utils import (
     download_to_temp,
     find_sibling_script,
     iter_event_lines,
+    kill_process_group,
     parse_add_dirs_env,
     resolve_cli_path,
     save_base64_image_to_temp,
     spawn_argv,
     subprocess_kwargs,
+    track_cli_process,
     try_int,
     write_temp,
 )
@@ -313,33 +315,6 @@ def _mcp_reachable(session_tools: dict[str, Any], expect_mcp: bool) -> tuple[boo
         f"mcp_servers={session_tools.get('mcp_servers')} tools={session_tools.get('total')} "
         "— no mcp__ tools and no ToolSearch"
     )
-
-
-def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
-    """Best-effort SIGKILL of a subprocess and its entire process group.
-
-    The Claude CLI spawns its own children — MCP servers, including the
-    computer-use server that drives the desktop. A plain ``proc.kill()``
-    reaps only the direct child and orphans those grandchildren; an
-    orphaned computer-use server keeps clicking and typing on the user's
-    machine. Spawning with ``start_new_session=True`` makes the CLI a
-    process-group leader, so one ``killpg`` reaps the whole tree.
-
-    Call from a ``finally`` so it runs on graceful timeout, on a
-    CancelledError from the executor's outer wait_for, and on any crash.
-    """
-    if proc.returncode is not None:
-        return  # already exited — nothing to reap
-    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass  # group already gone, or not permitted — fall through
-    try:
-        proc.kill()
-    except (ProcessLookupError, OSError):
-        pass
 
 
 def _content_to_cli_text(content: str | list, cleanup_paths: list[str] | None = None) -> str:
@@ -1474,7 +1449,7 @@ class ClaudeCliBackend(ModelBackend):
 
     async def _generate_batch(self, cmd: list[str], prompt: str = "") -> ModelResult:
         start = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
+        proc = track_cli_process(await asyncio.create_subprocess_exec(
             *spawn_argv(cmd),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -1483,7 +1458,7 @@ class ClaudeCliBackend(ModelBackend):
             env=self._isolated_env(),
             start_new_session=True,
             **subprocess_kwargs(),
-        )
+        ))
 
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -1499,7 +1474,7 @@ class ClaudeCliBackend(ModelBackend):
             # Reap on every exit — graceful timeout, a CancelledError from
             # the executor's outer wait_for, or a crash — so the CLI and
             # its MCP grandchildren never outlive this call.
-            _kill_process_group(proc)
+            kill_process_group(proc)
 
         elapsed = time.monotonic() - start
 
@@ -1546,7 +1521,7 @@ class ClaudeCliBackend(ModelBackend):
         cmd = [*cmd, "--verbose", "--output-format", "stream-json", "--include-partial-messages"]
         start = time.monotonic()
 
-        proc = await asyncio.create_subprocess_exec(
+        proc = track_cli_process(await asyncio.create_subprocess_exec(
             *spawn_argv(cmd),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -1555,7 +1530,7 @@ class ClaudeCliBackend(ModelBackend):
             env=self._isolated_env(),
             start_new_session=True,
             **subprocess_kwargs(),
-        )
+        ))
 
         # Write prompt to stdin and close — CLI reads it and begins processing
         if prompt and proc.stdin:
@@ -1627,7 +1602,7 @@ class ClaudeCliBackend(ModelBackend):
                         if not ok:
                             _tools_unreachable = True
                             logger.error("CLI session started with MCP tools unreachable: %s", why)
-                            _kill_process_group(proc)
+                            kill_process_group(proc)
                             return
                         continue
 
@@ -1777,7 +1752,7 @@ class ClaudeCliBackend(ModelBackend):
             # Reap on every exit — graceful timeout, a CancelledError from
             # the executor's outer wait_for, or a crash — so the CLI and
             # its computer-use MCP grandchild never outlive this call.
-            _kill_process_group(proc)
+            kill_process_group(proc)
 
         elapsed = time.monotonic() - start
 

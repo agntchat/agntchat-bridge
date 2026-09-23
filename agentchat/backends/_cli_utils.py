@@ -9,15 +9,18 @@ Windows users see divergent failures. Put the shared logic here.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import urllib.request
+import weakref
 from typing import AsyncIterator, Iterable
 
 
@@ -173,6 +176,69 @@ def subprocess_kwargs() -> dict:
     if sys.platform == "win32":
         return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {}
+
+
+def kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort SIGKILL of a CLI subprocess and its entire process group.
+
+    The CLIs spawn their own children — MCP servers, including the
+    computer-use server that drives the desktop. A plain ``proc.kill()``
+    reaps only the direct child and orphans those grandchildren; an
+    orphaned computer-use server keeps clicking and typing on the user's
+    machine. Spawning with ``start_new_session=True`` makes the CLI a
+    process-group leader, so one ``killpg`` reaps the whole tree.
+
+    Call from a ``finally`` so it runs on graceful timeout, on a
+    CancelledError from the executor's outer wait_for, and on any crash.
+    """
+    if proc.returncode is not None:
+        return  # already exited — nothing to reap
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass  # group already gone, or not permitted — fall through
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+
+
+# Every CLI subprocess a backend has running. A shutdown never reaches the
+# per-call ``finally`` reapers: ``Executor.stop()`` deregisters and the
+# process exits with the handler tasks still pending, so the CLI — its own
+# session leader, out of reach of any signal aimed at the bridge — ran on
+# as an orphan. On 2026-09-23 `tauri dev` restarted the desktop app mid-task;
+# the orphaned CLI finished the work and committed it, and its answer went
+# to a dead pipe, so nobody heard. Weak refs: a finished call's process
+# drops out without an explicit unregister.
+_live_cli_procs: "weakref.WeakSet[asyncio.subprocess.Process]" = weakref.WeakSet()
+
+
+def track_cli_process(proc: asyncio.subprocess.Process) -> asyncio.subprocess.Process:
+    """Register a freshly spawned CLI so shutdown can reap it. Returns ``proc``."""
+    _live_cli_procs.add(proc)
+    return proc
+
+
+def kill_all_cli_processes() -> int:
+    """SIGKILL every tracked CLI still running (and its process group).
+
+    Synchronous and await-free so the executor's shutdown signal handler can
+    call it first thing, inside the desktop app's SIGTERM grace window.
+    Also registered with ``atexit`` as a backstop. Returns how many were
+    killed.
+    """
+    killed = 0
+    for proc in list(_live_cli_procs):
+        if proc.returncode is None:
+            kill_process_group(proc)
+            killed += 1
+    return killed
+
+
+atexit.register(kill_all_cli_processes)
 
 
 def try_int(val: str | None) -> int | None:

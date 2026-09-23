@@ -52,11 +52,13 @@ from ._cli_utils import (
     download_image_to_temp,
     find_sibling_script,
     iter_event_lines,
+    kill_process_group,
     parse_add_dirs_env,
     resolve_cli_path,
     save_base64_image_to_temp,
     spawn_argv,
     subprocess_kwargs,
+    track_cli_process,
     try_int,
     write_temp,
 )
@@ -660,10 +662,7 @@ class CodexCliBackend(ModelBackend):
         """Best-effort kill + wait. Used from exception paths."""
         if proc.returncode is not None:
             return
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return
+        kill_process_group(proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=_PROC_SHUTDOWN_GRACE)
         except asyncio.TimeoutError:
@@ -688,7 +687,7 @@ class CodexCliBackend(ModelBackend):
         on long-running runs that emit warnings.
         """
         start = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
+        proc = track_cli_process(await asyncio.create_subprocess_exec(
             *spawn_argv(cmd),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -699,8 +698,11 @@ class CodexCliBackend(ModelBackend):
             # by name. Inherits the rest of the bridge env (OPENAI_API_KEY,
             # CODEX_HOME, PATH, the per-agent TMPDIR the org host sets).
             env=self._mcp_subprocess_env(),
+            # Own process group, so one killpg also reaps Codex's MCP
+            # server children (see kill_process_group).
+            start_new_session=True,
             **subprocess_kwargs(),
-        )
+        ))
 
         # Concurrent stderr drain — if Codex emits warnings during a
         # successful run, the 64KB pipe buffer fills, the child blocks

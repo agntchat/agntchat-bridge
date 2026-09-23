@@ -11,7 +11,11 @@ import time
 
 import pytest
 
-from agentchat.backends.claude_cli import _kill_process_group
+from agentchat.backends._cli_utils import (
+    kill_all_cli_processes,
+    kill_process_group,
+    track_cli_process,
+)
 
 
 async def _wait_dead(pid: int, timeout: float = 5.0) -> bool:
@@ -45,7 +49,7 @@ async def test_kill_process_group_reaps_child_and_grandchild():
 
     os.kill(grandchild_pid, 0)  # sanity: grandchild is alive
 
-    _kill_process_group(proc)
+    kill_process_group(proc)
 
     assert await _wait_dead(proc.pid), "parent (CLI) still alive after kill"
     assert await _wait_dead(grandchild_pid), "grandchild (MCP server) leaked"
@@ -60,4 +64,33 @@ async def test_kill_process_group_noop_on_exited_process():
     )
     await proc.wait()
     assert proc.returncode is not None
-    _kill_process_group(proc)  # must not raise
+    kill_process_group(proc)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_kill_all_cli_processes_reaps_tracked_runs_on_shutdown():
+    """The shutdown sweep kills every tracked, still-running CLI tree.
+
+    Regression (2026-09-23): the desktop app restarted mid-task, the bridge
+    exited without cancelling its handlers, and the CLI — its own session
+    leader — ran on as an orphan, committing work nobody heard about.
+    """
+    running = track_cli_process(await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", "sleep 300 & echo $!; wait",
+        stdout=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    ))
+    assert running.stdout is not None
+    grandchild_pid = int((await running.stdout.readline()).decode().strip())
+
+    finished = track_cli_process(await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", "true", start_new_session=True,
+    ))
+    await finished.wait()
+
+    assert kill_all_cli_processes() == 1
+
+    assert await _wait_dead(running.pid), "tracked CLI survived shutdown"
+    assert await _wait_dead(grandchild_pid), "tracked CLI's MCP child survived shutdown"
+    await asyncio.wait_for(running.wait(), timeout=5)
+    assert kill_all_cli_processes() == 0

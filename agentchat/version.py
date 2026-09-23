@@ -409,4 +409,9 @@ different things.
 # before dispatch, naming the field and its description, instead of
 # reaching the SDK method and surfacing as a Python TypeError the model
 # cannot act on. Bridge-only.
-BRIDGE_VERSION = "2.11.10"
+# 2.11.11 — a shutdown signal kills every in-flight CLI run (and its MCP
+# children) before deregistering. stop() never cancelled the handlers, so
+# the per-call reapers never ran and the CLI, its own session leader,
+# outlived the bridge: work finished with nobody told. Codex now spawns in
+# its own process group too. Bridge-only.
+BRIDGE_VERSION = "2.11.11"

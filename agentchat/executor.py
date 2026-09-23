@@ -43,6 +43,7 @@ import httpx
 from ._dedup import MessageDedup
 from .auth import TokenManager
 from .backends import BackendInterruptedError
+from .backends._cli_utils import kill_all_cli_processes
 from .errors import AgentChatError, AuthError, StaleContextError
 from .transport import PhoenixTransport
 
@@ -584,6 +585,12 @@ class ExecutorClient:
             if self._shutdown_done:
                 return
             self._shutdown_done = True
+            # Reap in-flight CLI runs first, synchronously: stop() never
+            # cancels the handler tasks, so their own reapers don't run, and
+            # the desktop app SIGKILLs us ~2s after this SIGTERM.
+            killed = kill_all_cli_processes()
+            if killed:
+                logger.info("Killed %d in-flight CLI run(s) on shutdown", killed)
             logger.info("Shutdown signal received — deregistering executor")
             # Schedule stop() immediately so deregister fires before loops exit
             loop.create_task(self.stop())
