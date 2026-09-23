@@ -43,7 +43,8 @@ import httpx
 from ._dedup import MessageDedup
 from .auth import TokenManager
 from .backends import BackendInterruptedError
-from .backends._cli_utils import kill_all_cli_processes
+from .backends._cli_utils import begin_shutdown
+from .backends.cli_runs import resumable_task_ids, run_key_var
 from .errors import AgentChatError, AuthError, StaleContextError
 from .transport import PhoenixTransport
 
@@ -585,12 +586,13 @@ class ExecutorClient:
             if self._shutdown_done:
                 return
             self._shutdown_done = True
-            # Reap in-flight CLI runs first, synchronously: stop() never
+            # Reap non-resumable CLI runs first, synchronously: stop() never
             # cancels the handler tasks, so their own reapers don't run, and
-            # the desktop app SIGKILLs us ~2s after this SIGTERM.
-            killed = kill_all_cli_processes()
+            # the desktop app SIGKILLs us ~2s after this SIGTERM. Resumable
+            # runs keep going for the next bridge to adopt (cli_runs).
+            killed = begin_shutdown()
             if killed:
-                logger.info("Killed %d in-flight CLI run(s) on shutdown", killed)
+                logger.info("Killed %d non-resumable CLI run(s) on shutdown", killed)
             logger.info("Shutdown signal received — deregistering executor")
             # Schedule stop() immediately so deregister fires before loops exit
             loop.create_task(self.stop())
@@ -1235,6 +1237,9 @@ class ExecutorClient:
                 "max_concurrent": self._max_concurrent,
                 "backend_health": health,
                 "instance_id": self._instance_id,
+                # Tasks whose CLI run outlived the previous bridge process:
+                # the server requeues them for this one to adopt.
+                "resumable_task_ids": resumable_task_ids(),
                 "metadata": {
                     "device_name": device_name(),
                     "bridge_version": BRIDGE_VERSION,
@@ -1284,12 +1289,16 @@ class ExecutorClient:
             # Scope the current task id to the handler call: every LLM call
             # (and its fire-and-forget usage report) happens inside it.
             _ctx_token = CURRENT_TASK_ID.set(task.task_id or task.id)
+            # The run key lets a CLI run survive a bridge restart and be
+            # adopted when this task is redelivered (backends/cli_runs.py).
+            _run_token = run_key_var.set(("task", task.task_id or task.id))
             try:
                 result = await asyncio.wait_for(
                     self._task_handler(task),
                     timeout=self._task_timeout,
                 )
             finally:
+                run_key_var.reset(_run_token)
                 CURRENT_TASK_ID.reset(_ctx_token)
 
             # Atomic completion contract (protocol v2):
@@ -3310,10 +3319,14 @@ class ExecutorClient:
 
         try:
             logger.info("[MSG-HANDLE] Calling message handler for %s (timeout=%ds)", msg.id, self._message_timeout)
-            reply = await asyncio.wait_for(
-                self._message_handler(msg),
-                timeout=self._message_timeout,
-            )
+            _run_token = run_key_var.set(("message", msg.message_id or msg.id))
+            try:
+                reply = await asyncio.wait_for(
+                    self._message_handler(msg),
+                    timeout=self._message_timeout,
+                )
+            finally:
+                run_key_var.reset(_run_token)
             logger.info("[MSG-HANDLE] Handler returned for %s: reply_type=%s", msg.id, type(reply).__name__)
 
             # Acknowledge receipt — guarded on its own: an ack failure after a

@@ -414,4 +414,12 @@ different things.
 # the per-call reapers never ran and the CLI, its own session leader,
 # outlived the bridge: work finished with nobody told. Codex now spawns in
 # its own process group too. Bridge-only.
-BRIDGE_VERSION = "2.11.11"
+# 2.11.12 — CLI runs survive a bridge restart and are adopted. A turn run
+# under a task/message key writes its stream to ~/.agentchat/runs/<agent>/
+# instead of a pipe; shutdown spares it (computer-use/Chrome runs still die);
+# the next bridge reports the task ids at registration (`resumable_task_ids`,
+# the backend requeues them as `run_reattach`) and the redelivered handler
+# reads the surviving run's file instead of spawning. POSIX only. Needs the
+# backend that understands `resumable_task_ids`; an older one fails the task
+# as interrupted instead.
+BRIDGE_VERSION = "2.11.12"

@@ -51,6 +51,7 @@ from . import (
     ToolCall,
     tool_result_is_error,
 )
+from . import cli_runs
 from ._cli_utils import (
     ANSI_ESCAPE_RE,
     cleanup_temp_files,
@@ -63,6 +64,7 @@ from ._cli_utils import (
     resolve_cli_path,
     save_base64_image_to_temp,
     spawn_argv,
+    shutting_down,
     subprocess_kwargs,
     track_cli_process,
     try_int,
@@ -315,6 +317,18 @@ def _mcp_reachable(session_tools: dict[str, Any], expect_mcp: bool) -> tuple[boo
         f"mcp_servers={session_tools.get('mcp_servers')} tools={session_tools.get('total')} "
         "— no mcp__ tools and no ToolSearch"
     )
+
+
+def _kill_run(run: "cli_runs.CliRun") -> None:
+    """Kill a run's process group, whether spawned here or adopted."""
+    if run.proc is not None:
+        kill_process_group(run.proc)
+        return
+    if cli_runs.pid_alive(run.pid):
+        try:
+            os.killpg(run.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def _content_to_cli_text(content: str | list, cleanup_paths: list[str] | None = None) -> str:
@@ -1521,22 +1535,24 @@ class ClaudeCliBackend(ModelBackend):
         cmd = [*cmd, "--verbose", "--output-format", "stream-json", "--include-partial-messages"]
         start = time.monotonic()
 
-        proc = track_cli_process(await asyncio.create_subprocess_exec(
-            *spawn_argv(cmd),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STREAM_LIMIT,
-            env=self._isolated_env(),
-            start_new_session=True,
-            **subprocess_kwargs(),
-        ))
-
-        # Write prompt to stdin and close — CLI reads it and begins processing
-        if prompt and proc.stdin:
-            proc.stdin.write(prompt.encode())
-            await proc.stdin.drain()
-            proc.stdin.close()
+        # A run a previous bridge process left behind for this same task or
+        # message (the bridge restarted mid-turn) is adopted instead of
+        # started again: its event file is read from the top, so everything
+        # below — parsing, progress, the ModelResult — is unchanged.
+        run = cli_runs.find_adoptable()
+        if run is None:
+            run = await cli_runs.spawn(
+                spawn_argv(cmd),
+                prompt=prompt,
+                env=self._isolated_env(),
+                limit=_STREAM_LIMIT,
+                # An orphaned computer-use server or Chrome session would keep
+                # driving the user's machine — those runs die with the bridge.
+                resumable=self._computer_use_mode != "local" and not self._chrome,
+                subprocess_kwargs=subprocess_kwargs(),
+            )
+            assert run.proc is not None
+            track_cli_process(run.proc, resumable=run.resumable)
 
         result_text = ""
         _TEXT_DELTA_INTERVAL = 0.3
@@ -1576,9 +1592,8 @@ class ClaudeCliBackend(ModelBackend):
             async def read_stream():
                 nonlocal result_text, _last_delta_time, _accumulated_text, _result_error_subtype, _result_subtype, _result_is_error, _num_turns
                 nonlocal _active_tool_use, _usage, _result_model, _session_tools, _tools_unreachable
-                assert proc.stdout is not None
                 async for line in iter_event_lines(
-                    proc.stdout, timeout=self._timeout, max_line=_STREAM_LIMIT
+                    run.stdout(), timeout=self._timeout, max_line=_STREAM_LIMIT
                 ):
                     line_str = line.decode().strip()
                     if not line_str:
@@ -1602,7 +1617,7 @@ class ClaudeCliBackend(ModelBackend):
                         if not ok:
                             _tools_unreachable = True
                             logger.error("CLI session started with MCP tools unreachable: %s", why)
-                            kill_process_group(proc)
+                            _kill_run(run)
                             return
                         continue
 
@@ -1741,7 +1756,9 @@ class ClaudeCliBackend(ModelBackend):
                     await on_progress(event)
 
             await read_stream()
-            await proc.wait()
+            await run.wait()
+            returncode = run.returncode
+            err_msg = await run.stderr_text()
 
         except asyncio.TimeoutError:
             elapsed = time.monotonic() - start
@@ -1751,10 +1768,23 @@ class ClaudeCliBackend(ModelBackend):
         finally:
             # Reap on every exit — graceful timeout, a CancelledError from
             # the executor's outer wait_for, or a crash — so the CLI and
-            # its computer-use MCP grandchild never outlive this call.
-            kill_process_group(proc)
+            # its computer-use MCP grandchild never outlive this call. The
+            # one exception is a bridge shutdown: a resumable run is left
+            # running, record intact, for the next bridge to adopt.
+            if not (shutting_down() and run.resumable):
+                _kill_run(run)
+                run.discard()
 
         elapsed = time.monotonic() - start
+
+        if run.adopted and returncode is None:
+            # Not our child, so no exit code: the result event decides. A run
+            # that died without one was interrupted, not answered.
+            if not _result_subtype:
+                raise BackendInterruptedError(
+                    "Claude CLI run adopted after a bridge restart ended without a result"
+                )
+            returncode = 1 if _result_is_error else 0
 
         if _tools_unreachable:
             raise BackendToolsUnavailableError(
@@ -1762,10 +1792,7 @@ class ClaudeCliBackend(ModelBackend):
                 "nor ToolSearch — the model would have run toolless"
             )
 
-        if proc.returncode != 0:
-            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
-            err_msg = stderr_bytes.decode().strip() if stderr_bytes else ""
-
+        if returncode != 0:
             # The CLI process can exit nonzero *after* emitting a successful
             # result event — teardown noise (a post-run hook, an MCP server
             # shutdown). The result event is the authoritative completion
@@ -1784,7 +1811,7 @@ class ClaudeCliBackend(ModelBackend):
                     "Claude CLI exit code %d but result subtype=success "
                     "(is_error=False) — honoring the result event, treating "
                     "the run as successful. stderr=%s",
-                    proc.returncode,
+                    returncode,
                     err_msg[:200] if err_msg else "(empty)",
                 )
             else:
@@ -1807,10 +1834,10 @@ class ClaudeCliBackend(ModelBackend):
                 partial = result_text or _accumulated_text or "(empty)"
                 logger.error(
                     "Claude CLI exit code %d | reason=%s | stderr=%s | accumulated_len=%d | last_500=%s",
-                    proc.returncode, detail, err_msg[:200] if err_msg else "(empty)",
+                    returncode, detail, err_msg[:200] if err_msg else "(empty)",
                     len(partial), partial[-500:] if partial else "(empty)",
                 )
-                raise self._classify_failure(detail, proc.returncode)
+                raise self._classify_failure(detail, returncode)
 
         elif _result_is_error and (
             _is_auth_failure(result_text) or _is_rate_limit_failure(result_text)

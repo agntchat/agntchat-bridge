@@ -12,7 +12,7 @@ import time
 import pytest
 
 from agentchat.backends._cli_utils import (
-    kill_all_cli_processes,
+    begin_shutdown,
     kill_process_group,
     track_cli_process,
 )
@@ -68,29 +68,36 @@ async def test_kill_process_group_noop_on_exited_process():
 
 
 @pytest.mark.asyncio
-async def test_kill_all_cli_processes_reaps_tracked_runs_on_shutdown():
-    """The shutdown sweep kills every tracked, still-running CLI tree.
+async def test_begin_shutdown_kills_non_resumable_runs_and_spares_resumable(monkeypatch):
+    """Shutdown kills every tracked non-resumable CLI tree, and leaves a
+    resumable run for the next bridge to adopt (cli_runs).
 
-    Regression (2026-09-23): the desktop app restarted mid-task, the bridge
-    exited without cancelling its handlers, and the CLI — its own session
-    leader — ran on as an orphan, committing work nobody heard about.
+    Regression (2026-09-23): the desktop app restarted mid-task and the bridge
+    exited without cancelling its handlers. Computer-use runs must die with
+    it; a plain task run must survive it.
     """
-    running = track_cli_process(await asyncio.create_subprocess_exec(
+    from agentchat.backends import _cli_utils
+    monkeypatch.setattr(_cli_utils, "_shutting_down", False)
+
+    doomed = track_cli_process(await asyncio.create_subprocess_exec(
         "/bin/sh", "-c", "sleep 300 & echo $!; wait",
         stdout=asyncio.subprocess.PIPE,
         start_new_session=True,
     ))
-    assert running.stdout is not None
-    grandchild_pid = int((await running.stdout.readline()).decode().strip())
+    assert doomed.stdout is not None
+    grandchild_pid = int((await doomed.stdout.readline()).decode().strip())
 
-    finished = track_cli_process(await asyncio.create_subprocess_exec(
-        "/bin/sh", "-c", "true", start_new_session=True,
-    ))
-    await finished.wait()
+    spared = track_cli_process(await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", "sleep 300", start_new_session=True,
+    ), resumable=True)
 
-    assert kill_all_cli_processes() == 1
+    assert begin_shutdown() == 1
+    assert _cli_utils.shutting_down()
 
-    assert await _wait_dead(running.pid), "tracked CLI survived shutdown"
-    assert await _wait_dead(grandchild_pid), "tracked CLI's MCP child survived shutdown"
-    await asyncio.wait_for(running.wait(), timeout=5)
-    assert kill_all_cli_processes() == 0
+    assert await _wait_dead(doomed.pid), "non-resumable CLI survived shutdown"
+    assert await _wait_dead(grandchild_pid), "its MCP child survived shutdown"
+    await asyncio.wait_for(doomed.wait(), timeout=5)
+    os.kill(spared.pid, 0)  # resumable run still alive
+
+    kill_process_group(spared)
+    await asyncio.wait_for(spared.wait(), timeout=5)
