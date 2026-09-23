@@ -399,6 +399,32 @@ class ToolExecutor:
         # All arguments passed as kwargs (simple, works with all executor methods)
         properties = schema.get("properties", {})
         required_set = set(schema.get("required", []))
+
+        # A call missing a schema-required argument is refused HERE, with the
+        # field named and described, instead of reaching the SDK method and
+        # surfacing as a Python TypeError ("get_calendar_event() missing 1
+        # required positional argument: 'event_id'", 2026-09-23). The model
+        # can act on "event_id is required: <its description>"; it cannot
+        # act on a traceback fragment.
+        missing = [
+            pname for pname in sorted(required_set)
+            if arguments.get(pname) is None and (properties.get(pname, {}) or {}).get("default") is None
+        ]
+        if missing:
+            detail = "; ".join(
+                f"{pname} — {(properties.get(pname, {}) or {}).get('description') or 'required'}"
+                for pname in missing
+            )
+            logger.warning("Tool %s called without required argument(s): %s", tool_name, missing)
+            self._call_history.append({
+                "name": tool_name, "arguments": arguments,
+                "result_preview": f"missing required: {missing}",
+            })
+            return json.dumps({
+                "error": f"missing required argument(s): {', '.join(missing)}",
+                "missing": missing,
+                "detail": detail,
+            })
         kw_args: dict[str, Any] = {}
         for pname in param_names:
             val = arguments.get(pname)

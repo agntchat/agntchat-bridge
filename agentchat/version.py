@@ -405,4 +405,8 @@ different things.
 # context it had to assume any call made while a pulse was in flight was the
 # pulse's, so a send the owner asked for in chat could be refused. Additive:
 # an older backend ignores the headers.
-BRIDGE_VERSION = "2.11.9"
+# 2.11.10 — a tool call missing a schema-required argument is refused
+# before dispatch, naming the field and its description, instead of
+# reaching the SDK method and surfacing as a Python TypeError the model
+# cannot act on. Bridge-only.
+BRIDGE_VERSION = "2.11.10"
