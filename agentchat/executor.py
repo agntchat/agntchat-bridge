@@ -1340,6 +1340,18 @@ class ExecutorClient:
                 )
                 return
 
+            # The handler parked the task (end_turn blocked / awaiting_input,
+            # bridge 2.11.9): it stays open under "blocked" for whatever it
+            # waits on to resume it. Completing it here would close it with
+            # the parking text as its result.
+            parked = extra.pop("parked", None)
+            if parked:
+                logger.info(
+                    "Task %s parked (end_turn %s) — no bridge completion",
+                    task.task_id or task.id, parked,
+                )
+                return
+
             # MCP complete_task / fail_task want the underlying Task.id
             # (task.task_id), NOT the gateway queue entry id (task.id).
             # The HTTP /accept and /progress endpoints below take the
@@ -1940,8 +1952,14 @@ class ExecutorClient:
         topic: str | None = None,
         goal: str | None = None,
         message: str | None = None,
+        opened_by_task_id: str | None = None,
     ) -> dict[str, Any]:
         """Find or create a DM conversation with one or more other participants.
+
+        `opened_by_task_id` names the task this agent is working while it
+        opens the thread (bridge 2.11.9): the server hands that task back on
+        every delivery into the thread while it is open, so a peer's answer
+        resumes the task rather than a taskless message turn.
 
         `message` is an opening line the server posts into the thread as this
         agent in the same call (bridge 2.11.7; older servers ignore it).
@@ -1974,6 +1992,8 @@ class ExecutorClient:
             body["threadGoal"] = goal
         if message:
             body["message"] = message
+        if opened_by_task_id:
+            body["openedByTaskId"] = opened_by_task_id
         return await self._post("/api/conversations/dm", json=body)
 
     async def get_messages(

@@ -346,6 +346,10 @@ class ToolExecutor:
                 arguments["source_conversation_id"] = self._context.get("conversation_id")
             if not arguments.get("source_message_id"):
                 arguments["source_message_id"] = self._context.get("source_message_id")
+            # The task this turn is running: the thread remembers it so the
+            # peer's reply resumes the task (see ExecutorClient.find_or_create_dm).
+            if not arguments.get("opened_by_task_id") and self._context.get("task_id"):
+                arguments["opened_by_task_id"] = self._context.get("task_id")
 
         # Auto-inject thread_id for thread lifecycle verbs when the model
         # didn't supply one (or used a placeholder). The current conversation
@@ -416,6 +420,7 @@ class ToolExecutor:
             "source_message_id",
             "active_conversation_id",
             "last_seen_message_id",
+            "opened_by_task_id",
         ):
             if injected_key in arguments and injected_key not in kw_args:
                 kw_args[injected_key] = arguments[injected_key]

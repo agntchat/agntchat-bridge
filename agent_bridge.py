@@ -2618,6 +2618,28 @@ def _tool_call_arguments(result: Any, canonical_name: str) -> dict[str, Any] | N
 _SILENT_END_TURN_REASONS = frozenset({"no_action_needed", "thread_redirect"})
 
 
+_PARKING_END_TURN_REASONS = frozenset({"blocked", "awaiting_input"})
+
+
+def _task_parked_reason(result: Any) -> str | None:
+    """The end_turn reason that PARKS a task run, or None.
+
+    A task turn that ends with end_turn(blocked | awaiting_input) is waiting
+    on something — a peer's reply in a thread it opened, a human, an external
+    event — and must stay open so the reply resumes it. Before this the
+    bridge completed the task with the parking text as its summary: Kal's
+    "reminder is armed to check Gmail's reply" became a green completion
+    card while Gmail's answer sat in the queue (2026-09-22, task c8f1b233).
+    A refused call (`is_error`) does not count."""
+    args = _tool_call_arguments(result, "end_turn")
+    if args is None:
+        return None
+    reason = args.get("reason")
+    if isinstance(reason, str) and reason.strip() in _PARKING_END_TURN_REASONS:
+        return reason.strip()
+    return None
+
+
 def _silent_end_turn_called(result: Any) -> bool:
     """True when the model called `end_turn` to be SILENT this turn.
 
@@ -4736,6 +4758,29 @@ def run_single_agent(
             elif send_message_called:
                 completion_result["silent"] = True
                 completion_result["delivered_via_tool"] = "send_message"
+
+            # The run parked the task (end_turn blocked / awaiting_input):
+            # leave it open under "blocked" with the parking text as the
+            # status summary, and stand the completion down. Whatever the
+            # task is waiting for wakes the agent with the task still open.
+            parked = None if is_pulse else _task_parked_reason(result)
+            if parked and not _finisher_completion_fields(result):
+                real_task_id = task.task_id or task.id
+                try:
+                    await executor.update_task_status(
+                        real_task_id, "blocked",
+                        summary=(remaining_text or "")[:MAX_SUMMARY_CHARS] or None,
+                    )
+                    logger.info(
+                        "[%s] Task %s parked (end_turn %s) — left open, no completion",
+                        executor_key, real_task_id, parked,
+                    )
+                    completion_result["parked"] = parked
+                except Exception as e:
+                    logger.warning(
+                        "[%s] Could not park task %s as blocked (%s); completing as before",
+                        executor_key, real_task_id, e,
+                    )
 
             # The model may have closed the task itself through a finisher
             # tool; then the executor must not complete it again (the
