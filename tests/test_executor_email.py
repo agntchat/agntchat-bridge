@@ -113,6 +113,19 @@ class TestRunContextHeaders:
             assert mock.call_args.kwargs["extra_headers"] == {"X-Active-Conversation": "c-1"}
 
     @pytest.mark.asyncio
+    async def test_create_reminder_sends_run_context_headers(self, executor):
+        with patch.object(executor, "_post", new=AsyncMock(return_value={})) as mock:
+            await executor.create_reminder(
+                "10m", "Retry the deck", action_instruction="Retry.",
+                run_context={"task_id": "t-1", "conversation_id": "c-1"},
+            )
+            assert mock.call_args.args[0] == "/api/agents/me/reminders"
+            assert mock.call_args.kwargs["extra_headers"] == {
+                "X-Task-Id": "t-1",
+                "X-Active-Conversation": "c-1",
+            }
+
+    @pytest.mark.asyncio
     async def test_no_context_no_headers(self, executor):
         with patch.object(executor, "_post", new=AsyncMock(return_value={})) as mock:
             await executor.send_email("Body", to="to@example.com", subject="Hi")

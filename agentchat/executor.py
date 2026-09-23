@@ -2280,12 +2280,13 @@ class ExecutorClient:
 
     @staticmethod
     def _run_context_headers(run_context: dict[str, Any] | None) -> dict[str, str] | None:
-        """Which run a Gmail write belongs to, as request headers.
+        """Which run a REST write belongs to, as request headers.
 
         The backend gates email during a pulse by the owner's email-autonomy
         mode (`Agentchat.Agents.EmailAutonomy`). A REST call with no context
         left it guessing from "is a pulse in flight?", which also caught a
-        chat turn the owner started while a pulse happened to run. The
+        chat turn the owner started while a pulse happened to run. Reminder
+        creates send it too, so a retry links to the task it backstops. The
         ToolExecutor fills this from the turn it is executing."""
         if not run_context:
             return None
@@ -2849,6 +2850,7 @@ class ExecutorClient:
         recurring: bool = False,
         conversation_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        run_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a reminder for an event date.
 
@@ -2856,6 +2858,10 @@ class ExecutorClient:
         - With action_instruction: when the reminder fires, a Task is created
           for the agent to perform the specified action.
         - Without action_instruction: posts a notification card (for birthdays, etc.).
+
+        run_context (filled by the ToolExecutor) tells the backend which task
+        the turn is working, so a short-fuse retry links to that task and
+        fires in the task's own conversation instead of the owner DM.
         """
         body: dict[str, Any] = {
             "eventDate": event_date,
@@ -2868,7 +2874,10 @@ class ExecutorClient:
             body["conversationId"] = conversation_id
         if metadata:
             body["metadata"] = metadata
-        return await self._post("/api/agents/me/reminders", json=body)
+        return await self._post(
+            "/api/agents/me/reminders", json=body,
+            extra_headers=self._run_context_headers(run_context),
+        )
 
     async def list_reminders(
         self, status: str | None = None

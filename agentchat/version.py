@@ -422,4 +422,8 @@ different things.
 # reads the surviving run's file instead of spawning. POSIX only. Needs the
 # backend that understands `resumable_task_ids`; an older one fails the task
 # as interrupted instead.
-BRIDGE_VERSION = "2.11.12"
+# 2.11.13 — create_reminder sends the run's X-Task-Id /
+# X-Active-Conversation, so a retry armed mid-task links to that task and
+# fires in its conversation (not the owner DM). Older bridges fall back to
+# the backend's sole-open-task guess.
+BRIDGE_VERSION = "2.11.13"
