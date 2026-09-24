@@ -432,4 +432,10 @@ different things.
 # it in every room as current work after the task closed (Desktop redid a
 # finished deck edit from another channel, 2026-09-23). Additive: an older
 # backend ignores the headers.
-BRIDGE_VERSION = "2.11.14"
+# 2.11.15 — `openrouter` backend (the openai backend pointed at
+# openrouter.ai, own OPENROUTER_* env) and OpenAI request shaping for GPT-5+
+# / GPT-6: `max_completion_tokens` to OpenAI itself (they reject
+# `max_tokens`), `reasoning_effort="none"` on GPT-6 tool calls (its only
+# Chat Completions mode with function calling). An older bridge dies on an
+# `openrouter` agent with "Unknown model backend".
+BRIDGE_VERSION = "2.11.15"

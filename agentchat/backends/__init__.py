@@ -517,6 +517,7 @@ class ModelBackend(ABC):
 _BACKEND_REGISTRY: dict[str, str] = {
     "anthropic": ".anthropic",
     "openai": ".openai",
+    "openrouter": ".openrouter",
     "openclaw": ".openclaw",
     "claude_cli": ".claude_cli",
     "codex_cli": ".codex_cli",

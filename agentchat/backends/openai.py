@@ -38,8 +38,16 @@ class OpenAIBackend(ModelBackend):
     """Backend using the OpenAI Python SDK (openai.AsyncOpenAI).
 
     Configurable base_url makes this a universal backend for any
-    OpenAI-compatible provider.
+    OpenAI-compatible provider. Subclasses (``openrouter``) pin a provider
+    by overriding the class-level defaults below.
     """
+
+    _default_base_url: str | None = None
+    _default_model: str = _DEFAULT_MODEL
+    _base_url_env = "OPENAI_BASE_URL"
+    _api_key_env = "OPENAI_API_KEY"
+    _model_env = "OPENAI_MODEL"
+    _default_headers: dict[str, str] = {}
 
     def __init__(
         self,
@@ -70,16 +78,19 @@ class OpenAIBackend(ModelBackend):
         )
         client_kwargs: dict[str, Any] = {"timeout": float(effective_timeout)}
 
-        self._base_url = base_url or os.getenv("OPENAI_BASE_URL")
+        self._base_url = base_url or os.getenv(self._base_url_env) or self._default_base_url
         if self._base_url:
             client_kwargs["base_url"] = self._base_url
 
-        effective_key = api_key or os.getenv("OPENAI_API_KEY", "")
+        effective_key = api_key or os.getenv(self._api_key_env, "")
         if effective_key:
             client_kwargs["api_key"] = effective_key
 
+        if self._default_headers:
+            client_kwargs["default_headers"] = dict(self._default_headers)
+
         self._client = openai.AsyncOpenAI(**client_kwargs)
-        self._model = model or os.getenv("OPENAI_MODEL", _DEFAULT_MODEL)
+        self._model = model or os.getenv(self._model_env, self._default_model)
         self._max_tokens = (
             max_tokens
             or _try_int(os.getenv("OPENAI_MAX_TOKENS"))
@@ -92,6 +103,29 @@ class OpenAIBackend(ModelBackend):
         self._top_p = top_p
         self._frequency_penalty = frequency_penalty
         self._presence_penalty = presence_penalty
+
+    def _talks_to_openai(self) -> bool:
+        """True when requests go to OpenAI itself, not a compatible provider."""
+        return not self._base_url or "api.openai.com" in self._base_url
+
+    def _limit_kwargs(self, *, with_tools: bool = False) -> dict[str, Any]:
+        """Output cap (and, for tool calls, reasoning) for one request.
+
+        OpenAI's reasoning models (o-series, GPT-5 and later) reject
+        ``max_tokens`` on Chat Completions and take ``max_completion_tokens``,
+        which every current OpenAI model accepts. Compatible providers
+        (OpenRouter, Ollama, vLLM) keep ``max_tokens``.
+
+        GPT-6 supports function calling on Chat Completions only with
+        ``reasoning_effort="none"`` (developers.openai.com/api/docs/models/
+        gpt-6-sol), so a tool-carrying request pins it.
+        """
+        if not self._talks_to_openai():
+            return {"max_tokens": self._request_max_tokens()}
+        kwargs: dict[str, Any] = {"max_completion_tokens": self._request_max_tokens()}
+        if with_tools and self._request_model().startswith("gpt-6"):
+            kwargs["reasoning_effort"] = "none"
+        return kwargs
 
     def _sampling_kwargs(self) -> dict[str, Any]:
         """Build optional sampling kwargs for API calls."""
@@ -119,11 +153,11 @@ class OpenAIBackend(ModelBackend):
         try:
             response = await self._client.chat.completions.create(
                 model=self._request_model(),
-                max_tokens=self._request_max_tokens(),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                **self._limit_kwargs(),
                 **self._sampling_kwargs(),
             )
         except self._openai.APITimeoutError:
@@ -170,8 +204,8 @@ class OpenAIBackend(ModelBackend):
         try:
             response = await self._client.chat.completions.create(
                 model=self._request_model(),
-                max_tokens=self._request_max_tokens(),
                 messages=api_messages,
+                **self._limit_kwargs(),
                 **self._sampling_kwargs(),
             )
         except self._openai.APITimeoutError:
@@ -242,9 +276,9 @@ class OpenAIBackend(ModelBackend):
             try:
                 response = await self._client.chat.completions.create(
                     model=self._request_model(),
-                    max_tokens=self._request_max_tokens(),
                     messages=api_messages,
                     tools=tools,
+                    **self._limit_kwargs(with_tools=True),
                     **self._sampling_kwargs(),
                 )
             except self._openai.APITimeoutError:
@@ -387,9 +421,9 @@ class OpenAIBackend(ModelBackend):
                 try:
                     response = await self._client.chat.completions.create(
                         model=self._request_model(),
-                        max_tokens=self._request_max_tokens(),
                         messages=api_messages,
                         # No tools = forces text-only response
+                        **self._limit_kwargs(),
                         **self._sampling_kwargs(),
                     )
                 except self._openai.APITimeoutError:

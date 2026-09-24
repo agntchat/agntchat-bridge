@@ -3897,7 +3897,7 @@ def run_single_agent(
     # credential → env var (handled inside the backend constructor).
     # The server fetch only runs when nothing has been set locally.
     if (
-        effective_backend in ("anthropic", "openai")
+        effective_backend in ("anthropic", "openai", "openrouter")
         and "api_key" not in backend_kwargs
     ):
         resolved = asyncio.run(
