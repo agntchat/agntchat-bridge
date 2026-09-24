@@ -89,7 +89,6 @@ from agentchat.executor import (  # noqa: E402
     GatewayMessage,
     GatewayTask,
     ScopeRequest,
-    send_with_stale_retry,
 )
 from agentchat.tools.executor import ToolExecutor  # noqa: E402
 from agentchat.tools.parsing import parse_tool_calls as _parse_tool_calls_shared  # noqa: E402
@@ -417,37 +416,6 @@ async def _fetch_owner_location(
     except Exception as e:
         logger.debug("Owner location not available: %s", e)
     return {}
-
-
-async def _warm_up_directives(
-    base_url: str, agent_id: str, api_key: str, limit: int = 3
-) -> dict[str, dict[str, Any]]:
-    """Pre-compute directives for the agent's most active conversations.
-
-    Called at startup to seed the per-conversation directive cache so the
-    first message/task has warm directives even if the preloader times out.
-    Returns a dict mapping conversation_id -> directives. Best-effort.
-    """
-    import httpx
-
-    tm = TokenManager(base_url, agent_id, api_key)
-    token = await tm.get_token()
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.post(
-            f"{base_url.rstrip('/')}/api/gateway/warmup",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"limit": limit},
-        )
-    if resp.status_code != 200:
-        return {}
-    data = resp.json()
-    result: dict[str, dict[str, Any]] = {}
-    for entry in data.get("conversations", []):
-        conv_id = entry.get("conversationId")
-        directives = entry.get("directives")
-        if conv_id and directives:
-            result[conv_id] = directives
-    return result
 
 
 async def _sync_model_config(
@@ -1301,11 +1269,9 @@ async def send_parsed_presentations(
         }
 
         try:
-            # Same one-shot stale retry as the text reply: a peer bubble
-            # landing between the framing text and its card must not strand
-            # the card.
-            await send_with_stale_retry(
-                executor,
+            # A stale card the server still judges worth posting is posted
+            # server-side; a 409 means drop it.
+            await executor.send_message(
                 conversation_id,
                 content,
                 content_type="structured",
@@ -1313,14 +1279,12 @@ async def send_parsed_presentations(
                 content_structured=envelope,
                 correlation_id=correlation_id,
                 last_seen_message_id=last_seen_message_id,
-                log_label="ResultPresentation",
             )
             sent += 1
             logger.info("Sent ResultPresentation: %s (%d items)", title, item_count)
         except StaleContextError as sce:
             logger.info(
-                "Dropped stale ResultPresentation — %d new message(s) arrived during draft "
-                "(retry with advanced anchor was stale too)",
+                "Dropped stale ResultPresentation — superseded or redundant (%d new message(s))",
                 len(sce.new_messages),
             )
         except Exception as e:
@@ -1446,8 +1410,8 @@ async def _skip_directives_unavailable(
     The server's directive pipeline failing is a server incident, and
     silence + an error log beats a reply improvised on a bridge-side
     shadow prompt. The skip still has to clear the thinking bubble the
-    backend painted at send time, exactly like the skipMessage /
-    skipTrivialMessage returns do; before 2.10.6 this path returned
+    backend painted at send time, exactly like the skipMessage return
+    does; before 2.10.6 this path returned
     without cancelling and the bubble ghosted for ~60s.
 
     Always returns None so the caller can `return await` it in place of
@@ -2610,14 +2574,6 @@ def _tool_call_arguments(result: Any, canonical_name: str) -> dict[str, Any] | N
     return found
 
 
-# EndTurn reasons that mean "I post nothing this turn". Mirrors the server's
-# `FillerSuppression.silent_end_turn_reasons/0`. The other canonical reasons
-# (task_complete, awaiting_input, blocked) are the TERMINATOR use from the
-# identity directive: the model delivered its answer as final text and
-# end_turn merely closes the turn — that text must still be posted.
-_SILENT_END_TURN_REASONS = frozenset({"no_action_needed", "thread_redirect"})
-
-
 _PARKING_END_TURN_REASONS = frozenset({"blocked", "awaiting_input"})
 
 
@@ -2638,23 +2594,6 @@ def _task_parked_reason(result: Any) -> str | None:
     if isinstance(reason, str) and reason.strip() in _PARKING_END_TURN_REASONS:
         return reason.strip()
     return None
-
-
-def _silent_end_turn_called(result: Any) -> bool:
-    """True when the model called `end_turn` to be SILENT this turn.
-
-    Any prose the model emitted alongside that call is the declined turn
-    leaking out ("Trip King's got the hotel lookup — nothing for me to add
-    here", conv 0b86e6ed) and must not be posted. A missing/unknown reason
-    counts as silence, matching the server's coercion of unknown reasons to
-    `no_action_needed`."""
-    args = _tool_call_arguments(result, "end_turn")
-    if args is None:
-        return False
-    reason = args.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        return True
-    return reason.strip() in _SILENT_END_TURN_REASONS
 
 
 def _accumulated_stream_text(result: Any) -> str:
@@ -4040,29 +3979,6 @@ def run_single_agent(
             logger.debug("Live location fetch failed (context omitted): %s", e)
         return ""
 
-    # Per-conversation directive cache. Keyed by conversation_id.
-    # Seeded at startup by warm-up, updated from each server response.
-    _cached_directives_by_conv: dict[str, dict[str, Any]] = {}
-    # Fallback: the most recently received directives from any conversation.
-    # Used when we get a message from a conversation not yet in the cache.
-    _cached_directives_fallback: dict[str, Any] | None = None
-
-    # Pre-warm directives cache for active conversations (best-effort)
-    try:
-        _warmup_result = asyncio.run(
-            _warm_up_directives(AGENTGRAM_API_URL, agent_id, api_key, limit=3)
-        )
-        if _warmup_result:
-            _cached_directives_by_conv = _warmup_result
-            # Use the first conversation's directives as the global fallback
-            _cached_directives_fallback = next(iter(_warmup_result.values()))
-            logger.info(
-                "[%s] Pre-warmed directives for %d conversations",
-                executor_key, len(_warmup_result),
-            )
-    except Exception as e:
-        logger.debug("[%s] Directive warm-up failed (non-fatal): %s", executor_key, e)
-
     # The executor wraps BOTH message handlers and task handlers in a blunt
     # asyncio.wait_for that cancels the handler with no error and no reply.
     # The backend owns the sizing via outer_timeout() — a backstop ABOVE its
@@ -4407,20 +4323,16 @@ def run_single_agent(
 
     @executor.on_task
     async def handle_task(task: GatewayTask) -> dict[str, Any]:
-        nonlocal _cached_directives_by_conv, _cached_directives_fallback
-
         # Pick up any tools seeded since boot (e.g. update_pulse) before we
         # build this turn's tool defs. TTL-guarded — usually a no-op.
         await _maybe_refresh_resolved_tools()
 
-        # Read behavioral config from server directives (with per-conversation cache fallback)
+        # This task's own directives, or none. A cached copy from an earlier
+        # turn — worse, from another conversation — ran the turn on the wrong
+        # room's roster, memory and rules; with none, the guard below fails
+        # the task visibly.
         task_directives = task.raw.get("directives") or {}
         conv_id = task.conversation_id
-        if task_directives and conv_id:
-            _cached_directives_by_conv[conv_id] = task_directives
-            _cached_directives_fallback = task_directives
-        elif not task_directives:
-            task_directives = (conv_id and _cached_directives_by_conv.get(conv_id)) or _cached_directives_fallback or {}
 
         # Fail LOUD when there is no prompt to run on (H4: no fallback
         # prompt). A visibly failed task beats a turn improvised on a
@@ -4941,7 +4853,6 @@ def run_single_agent(
         All behavioral decisions (trivial filtering, scoping, reframing, freshness
         checks, error messages) use server-provided behavioralConfig.
         """
-        nonlocal _cached_directives_by_conv, _cached_directives_fallback
         logger.info(
             "[%s] === Message from %s (%s): %s ===",
             executor_key, msg.sender_name,
@@ -4954,14 +4865,11 @@ def run_single_agent(
         await _maybe_refresh_resolved_tools()
 
         # --- Read behavioral directives from server ---
-        # Use fresh server directives when available. If the preloader timed
-        # out (no directives in response), fall back to per-conversation cached
-        # directives, then global fallback. Only cache when conv_id is known.
+        # This message's own directives, or none: a cached copy from another
+        # turn — or another conversation — ran the turn on the wrong room's
+        # roster, memory and skip flags. Without them the guard below skips.
         conv_id = msg.conversation_id
-        if msg.directives and conv_id:
-            _cached_directives_by_conv[conv_id] = msg.directives
-            _cached_directives_fallback = msg.directives
-        directives = msg.directives or (conv_id and _cached_directives_by_conv.get(conv_id)) or _cached_directives_fallback or {}
+        directives = msg.directives or {}
 
         # Fail LOUD when there is no prompt to run on (H4: no fallback
         # prompt). Skipping the turn is safe: the server's directive
@@ -5017,16 +4925,6 @@ def run_single_agent(
         # --- Skip message if server directive says so (final decision, no override) ---
         if skip_message:
             logger.info("[%s] Skipping message per directive: %s", executor_key, skip_reason)
-            await _cancel_signal_bubble(executor, msg)
-            return None
-
-        # --- Trivial/engagement filter (server-computed decision) ---
-        if directives.get("skipTrivialMessage", False):
-            skip_trivial_reason = directives.get("skipTrivialReason") or "trivial_message"
-            logger.info(
-                "[%s] Skipping message (%s): '%s'",
-                executor_key, skip_trivial_reason, msg.content[:60],
-            )
             await _cancel_signal_bubble(executor, msg)
             return None
 
@@ -5108,7 +5006,7 @@ def run_single_agent(
 
         # Paint the streaming bubble as soon as the bridge accepts the
         # message — by this point the agent has been chosen for delivery,
-        # passed the skipMessage / skipTrivialMessage filters, and is
+        # passed the skipMessage filter, and is
         # committed to invoking the LLM. The user sees "Thinking..." as
         # acknowledgement that we're processing, then it transitions to
         # the real LLM phases (tool_call/writing) as those events fire.
@@ -5338,21 +5236,9 @@ def run_single_agent(
 
                 reply = result.text[:MAX_REPLY_CHARS]
 
-                # The model chose SILENCE (end_turn with a silent reason) and
-                # still produced prose. That prose is the declined turn leaking
-                # out — the identity directive's one silence mechanic is the
-                # tool call, and "nothing to add" IS a message. Drop it at the
-                # source; the server's FillerSuppression.end_turn_leak?/4 is
-                # the backstop for runtimes that don't. A terminator reason
-                # (task_complete / awaiting_input / blocked) keeps the text:
-                # that IS the delivery.
-                if _tu_ended_turn and reply and reply.strip() and _silent_end_turn_called(result):
-                    logger.info(
-                        "[%s] end_turn (silent) was called but the model also produced "
-                        "%d chars of prose — dropping it (the turn already ended)",
-                        executor_key, len(reply),
-                    )
-                    reply = ""
+                # Prose written after a SILENT end_turn is dropped by the
+                # server (FillerSuppression.end_turn_leak?/4) for every
+                # runtime; a terminator reason's text is the delivery.
 
                 if not reply or not reply.strip():
                     if human_expects_reply and not _tu_ended_turn and not _tu_sent_via_tool:
@@ -5478,20 +5364,17 @@ def run_single_agent(
                     # server-owned (HumanlikeDelivery + StaggeredBubbleWorker
                     # at the insert_message chokepoint) so bridge and WS/SDK
                     # agents get identical semantics (audit Theme 5.3).
-                    # A first 409 re-posts once with the anchor advanced
-                    # past the messages the server named; a second one
-                    # drops the draft (send_with_stale_retry).
-                    await send_with_stale_retry(
-                        executor, msg.conversation_id, reply,
+                    # The server settles a stale draft (posts it if it still
+                    # adds something); a 409 means drop it.
+                    await executor.send_message(
+                        msg.conversation_id, reply,
                         metadata=msg_meta_out,
                         last_seen_message_id=msg.latest_seen_message_id or msg.message_id or None,
-                        log_label=f"{executor_key} tool_use",
                     )
                     await _stream_cb.complete()
                 except StaleContextError as sce:
                     logger.info(
-                        "[%s] Dropped stale tool_use reply — %d new message(s) arrived during draft "
-                        "(retry with advanced anchor was stale too)",
+                        "[%s] Dropped stale tool_use reply — superseded or redundant (%d new message(s))",
                         executor_key, len(sce.new_messages),
                     )
                     reply_post_failed = True
@@ -5796,20 +5679,17 @@ def run_single_agent(
             # StaggeredBubbleWorker at the insert_message chokepoint) so bridge
             # and WS/SDK agents get identical semantics (audit Theme 5.3).
             try:
-                # A first 409 re-posts once with the anchor advanced past the
-                # messages the server named; a second one drops the draft
-                # (send_with_stale_retry).
-                await send_with_stale_retry(
-                    executor, msg.conversation_id, reply,
+                # The server settles a stale draft (posts it if it still adds
+                # something); a 409 means drop it.
+                await executor.send_message(
+                    msg.conversation_id, reply,
                     metadata=msg_meta_out,
                     last_seen_message_id=msg.latest_seen_message_id or msg.message_id or None,
-                    log_label=f"{executor_key} single_shot",
                 )
                 await _stream_cb.complete()
             except StaleContextError as sce:
                 logger.info(
-                    "[%s] Dropped stale reply — %d new message(s) arrived during draft "
-                    "(retry with advanced anchor was stale too)",
+                    "[%s] Dropped stale reply — superseded or redundant (%d new message(s))",
                     executor_key, len(sce.new_messages),
                 )
                 reply_post_failed = True

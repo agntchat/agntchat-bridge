@@ -122,72 +122,6 @@ def device_name() -> str:
     return name
 
 
-def newest_message_id(new_messages: list | None) -> str | None:
-    """The id of the newest message in a 409 `newMessages` list.
-
-    Max by `insertedAt` when every entry carries one (the serializer's
-    ISO-8601 UTC strings order lexicographically); otherwise the last
-    element with an id, which is the server's own `asc: inserted_at`
-    order. None when nothing usable was attached.
-    """
-    with_ids = [
-        m for m in (new_messages or [])
-        if isinstance(m, dict) and m.get("id")
-    ]
-    if not with_ids:
-        return None
-    if all(isinstance(m.get("insertedAt"), str) and m["insertedAt"] for m in with_ids):
-        return str(max(with_ids, key=lambda m: m["insertedAt"])["id"])
-    return str(with_ids[-1]["id"])
-
-
-async def send_with_stale_retry(
-    executor: Any,
-    conversation_id: str,
-    content: str,
-    *,
-    last_seen_message_id: str | None,
-    log_label: str,
-    **send_kwargs: Any,
-) -> dict[str, Any]:
-    """`executor.send_message`, re-posted ONCE with an advanced anchor when
-    the first attempt is refused as stale.
-
-    The server's 409 says "these messages arrived while you drafted". When
-    they are peer bubbles or side notes the draft is still the answer to the
-    human, so the same content is posted again with `last_seen_message_id`
-    moved past the newest of them. A second 409 propagates unchanged — the
-    caller drops the draft exactly as before — and so does a 409 that
-    attached nothing to advance past.
-
-    Every reply/card send that carries an anchor goes through here
-    (agent_bridge tool_use + single_shot replies, ResultPresentation cards,
-    the executor's handler-returned reply); the hidden thread redirect does
-    not, the server exempts EndTurn from the gate.
-    """
-    try:
-        return await executor.send_message(
-            conversation_id,
-            content,
-            last_seen_message_id=last_seen_message_id,
-            **send_kwargs,
-        )
-    except StaleContextError as sce:
-        advanced = newest_message_id(sce.new_messages)
-        if not advanced or advanced == last_seen_message_id:
-            raise
-        logger.info(
-            "[%s] Stale reply: re-posting once with anchor advanced past %d message(s) (%s -> %s)",
-            log_label, len(sce.new_messages), last_seen_message_id, advanced,
-        )
-        return await executor.send_message(
-            conversation_id,
-            content,
-            last_seen_message_id=advanced,
-            **send_kwargs,
-        )
-
-
 @dataclass
 class GatewayTask:
     """A task received from the gateway queue."""
@@ -3377,36 +3311,30 @@ class ExecutorClient:
                     metadata = reply.get("metadata")
                     if content:
                         try:
-                            await send_with_stale_retry(
-                                self,
+                            await self.send_message(
                                 msg.conversation_id,
                                 content,
                                 metadata=metadata,
                                 last_seen_message_id=freshness_anchor,
-                                log_label=f"MSG-HANDLE {msg.id}",
                             )
                             logger.info("Replied to message in %s", msg.conversation_id)
                         except StaleContextError as sce:
                             logger.info(
-                                "Dropped stale returned reply for %s — %d new message(s) arrived during draft "
-                                "(retry with advanced anchor was stale too)",
+                                "Dropped stale returned reply for %s — superseded or redundant (%d new message(s))",
                                 msg.id,
                                 len(sce.new_messages),
                             )
                 elif isinstance(reply, str):
                     try:
-                        await send_with_stale_retry(
-                            self,
+                        await self.send_message(
                             msg.conversation_id,
                             reply,
                             last_seen_message_id=freshness_anchor,
-                            log_label=f"MSG-HANDLE {msg.id}",
                         )
                         logger.info("Replied to message in %s", msg.conversation_id)
                     except StaleContextError as sce:
                         logger.info(
-                            "Dropped stale returned reply for %s — %d new message(s) arrived during draft "
-                            "(retry with advanced anchor was stale too)",
+                            "Dropped stale returned reply for %s — superseded or redundant (%d new message(s))",
                             msg.id,
                             len(sce.new_messages),
                         )

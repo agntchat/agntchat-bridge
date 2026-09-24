@@ -438,4 +438,15 @@ different things.
 # `max_tokens`), `reasoning_effort="none"` on GPT-6 tool calls (its only
 # Chat Completions mode with function calling). An older bridge dies on an
 # `openrouter` agent with "Unknown model backend".
-BRIDGE_VERSION = "2.11.15"
+# 2.11.16 — the server owns every "should this post" decision; the bridge's
+# copies go. (a) The one-shot stale re-post is removed: the server now posts
+# a stale draft that still adds something itself and only 409s a draft that
+# is superseded or redundant, so a 409 always means drop. (b) The
+# skipTrivialMessage skip is removed — the server stopped sending it and
+# decides engagement before the wake. (c) No fallback to cached directives:
+# a turn runs on its own directives or not at all (the fallback could be
+# another conversation's roster and rules). (d) Prose after a silent
+# end_turn is dropped by the server for every runtime, not here. Needs the
+# backend that settles stale drafts server-side; against an older one a
+# peer-stale reply is dropped instead of re-posted.
+BRIDGE_VERSION = "2.11.16"
