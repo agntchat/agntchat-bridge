@@ -426,4 +426,10 @@ different things.
 # X-Active-Conversation, so a retry armed mid-task links to that task and
 # fires in its conversation (not the owner DM). Older bridges fall back to
 # the backend's sole-open-task guess.
-BRIDGE_VERSION = "2.11.13"
+# 2.11.14 — save_agent_memory sends the run's X-Task-Id /
+# X-Active-Conversation. Its REST save never carried a source room, so a
+# note written mid-task landed room-less and unlinked; recall then served
+# it in every room as current work after the task closed (Desktop redid a
+# finished deck edit from another channel, 2026-09-23). Additive: an older
+# backend ignores the headers.
+BRIDGE_VERSION = "2.11.14"

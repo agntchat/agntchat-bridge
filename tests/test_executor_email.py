@@ -161,3 +161,42 @@ class TestRunContextHeaders:
                 "X-Active-Conversation": "conv-1",
             }
             assert "_ignored_arguments" not in result
+
+
+class TestSaveAgentMemoryRunContext:
+    """A memory saved mid-turn says which room and task it came from — the
+    backend records the source room and links the task, so recall stops
+    serving a mid-task note as current work once the task closes."""
+
+    @pytest.mark.asyncio
+    async def test_tool_executor_sends_turn_context_on_memory_save(self, executor):
+        from agentchat.tools.executor import ToolExecutor
+
+        tools = [{
+            "name": "save_agent_memory",
+            "executorMethod": "save_agent_memory",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "key": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["category", "key", "content"],
+            },
+        }]
+        te = ToolExecutor(
+            executor,
+            context={"task_id": "task-1", "conversation_id": "conv-1"},
+            resolved_tools=tools,
+        )
+        with patch.object(executor, "_post", new=AsyncMock(return_value={"memory": {}})) as mock:
+            await te.execute(
+                "save_agent_memory",
+                {"category": "learning", "key": "k", "content": "Deck needs PNGs"},
+            )
+            assert mock.call_args.args[0] == "/api/agents/me/memories"
+            assert mock.call_args.kwargs["extra_headers"] == {
+                "X-Task-Id": "task-1",
+                "X-Active-Conversation": "conv-1",
+            }

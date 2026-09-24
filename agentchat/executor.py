@@ -2089,8 +2089,14 @@ class ExecutorClient:
         metadata: dict[str, Any] | None = None,
         tags: list[str] | None = None,
         description: str | None = None,
+        run_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Save a persistent memory (upserts on category+key).
+
+        run_context (filled by the ToolExecutor) tells the backend which room
+        and task the save came from: the source room when none is named, and
+        the task link that stops recall presenting a mid-task note as current
+        work once the task closes.
 
         Returns the full response dict including ``memory`` and ``memoryPrompt``
         (the server-formatted prompt block reflecting the updated memory set).
@@ -2110,7 +2116,10 @@ class ExecutorClient:
             body["tags"] = tags
         if description:
             body["description"] = description
-        data = await self._post("/api/agents/me/memories", body)
+        data = await self._post(
+            "/api/agents/me/memories", body,
+            extra_headers=self._run_context_headers(run_context),
+        )
         return data
 
     async def get_family_memories(
