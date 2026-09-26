@@ -457,4 +457,8 @@ different things.
 # (2026-09-22..26). `_mcp_reachable` now refuses a session whose agentgram
 # server reported `failed`. Codex passes the file path too. Bridge-local:
 # the MCP server and bridge ship together, no backend change.
-BRIDGE_VERSION = "2.11.17"
+# 2.11.18 — the per-turn `directives.historyDepth` trim is gone: every turn
+# renders its whole anchored window. The server stopped sending the key
+# (a "self-contained" message kept four messages and lost the room around
+# it, conv 32357cfd); an older bridge simply never sees it.
+BRIDGE_VERSION = "2.11.18"

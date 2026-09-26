@@ -2158,25 +2158,6 @@ def _per_turn_tail(parts: list[str], anchor_name: str | None) -> str:
     return "\n\n".join(segs)
 
 
-def _apply_history_depth(
-    chat_messages: list[ChatMessage], depth: Any
-) -> list[ChatMessage]:
-    """Keep only the newest `depth` rendered history messages.
-
-    `depth` is the server's per-turn `directives.historyDepth`
-    (Agentchat.Agents.PromptGate.history_depth/2, from the message's
-    turn class): the last exchange for a self-contained turn, the agent's
-    normal window for a follow-up, absent when the whole anchored window
-    should render. Trimming changes the cached history prefix for that
-    turn — the server owns that trade; the bridge only applies it.
-    """
-    if isinstance(depth, bool) or not isinstance(depth, int) or depth <= 0:
-        return chat_messages
-    if len(chat_messages) <= depth:
-        return chat_messages
-    return chat_messages[-depth:]
-
-
 def _mark_cache_boundary(chat_messages: list[ChatMessage]) -> None:
     """Flag the last stable-history message as the prompt-cache boundary.
 
@@ -5048,15 +5029,6 @@ def run_single_agent(
 
         chat_messages = await history_task
         live_loc_ctx = await location_task
-
-        history_depth = (directives or {}).get("historyDepth")
-        rendered_history = len(chat_messages)
-        chat_messages = _apply_history_depth(chat_messages, history_depth)
-        if len(chat_messages) < rendered_history:
-            logger.info(
-                "[%s] History trimmed to %d of %d messages (server historyDepth)",
-                executor_key, len(chat_messages), rendered_history,
-            )
 
         # Echo the trigger in the per-turn tail only when it isn't already the
         # newest RENDERED history message — it almost always is, and
