@@ -35,6 +35,19 @@ def test_unreachable_when_neither_and_mcp_expected():
     assert "pending" in why
 
 
+def test_failed_server_is_unreachable_even_with_tool_search():
+    # 2026-09-22..26: the agentgram server failed to spawn on every turn and
+    # ToolSearch alone passed this check, so the agent ran toolless for days.
+    ok, why = _mcp_reachable({"mcp": 0, "tool_search": True, "total": 9, "mcp_servers": [{"name": "agentgram", "status": "failed"}]}, True)
+    assert not ok
+    assert "failed" in why
+
+
+def test_pending_server_with_tool_search_is_reachable():
+    # The deferred-startup race: ToolSearch waits for the server.
+    assert _mcp_reachable({"mcp": 0, "tool_search": True, "mcp_servers": [{"name": "agentgram", "status": "pending"}]}, True)[0]
+
+
 def test_nothing_to_reach_without_mcp():
     assert _mcp_reachable({"mcp": 0, "tool_search": False}, False) == (True, "no MCP expected")
 

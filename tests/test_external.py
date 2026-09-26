@@ -387,7 +387,7 @@ def test_hook_codex_notify_mirrors_prompt_and_reply(monkeypatch):
 
 
 def test_mcp_server_channel_events(monkeypatch):
-    monkeypatch.delenv("AGENTGRAM_TOOL_DEFS", raising=False)
+    monkeypatch.delenv("AGENTGRAM_TOOL_DEFS_FILE", raising=False)
     import agntchat_mcp_server as server  # noqa: PLC0415
 
     init = server.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
@@ -570,7 +570,7 @@ def test_hook_session_binding_beats_project_binding(monkeypatch, tmp_path):
 
 
 def test_mcp_server_switches_agent_when_the_binding_changes(monkeypatch, tmp_path, capsys):
-    monkeypatch.delenv("AGENTGRAM_TOOL_DEFS", raising=False)
+    monkeypatch.delenv("AGENTGRAM_TOOL_DEFS_FILE", raising=False)
     import agntchat_mcp_server as server  # noqa: PLC0415
 
     monkeypatch.setattr(server, "AGENT_ID", "old")
@@ -664,7 +664,7 @@ def test_session_title_is_applied_once_on_the_first_prompt(monkeypatch, tmp_path
 
 
 def test_mcp_poller_only_runs_when_the_session_is_a_channel(monkeypatch):
-    monkeypatch.delenv("AGENTGRAM_TOOL_DEFS", raising=False)
+    monkeypatch.delenv("AGENTGRAM_TOOL_DEFS_FILE", raising=False)
     import agntchat_mcp_server as server  # noqa: PLC0415
 
     assert hook._channel_flag_present("claude --dangerously-load-development-channels server:agntchat")

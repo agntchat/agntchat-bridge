@@ -303,12 +303,17 @@ def _mcp_reachable(session_tools: dict[str, Any], expect_mcp: bool) -> tuple[boo
     """Whether the platform's MCP tools can be used in this session.
 
     Reachable when MCP tools are attached (`mcp__…` names) OR the built-in
-    ToolSearch is present (deferred tools load through it). Only enforced
-    when the caller configured an MCP server (`expect_mcp`); a session with
-    no MCP config has nothing to reach.
+    ToolSearch is present (deferred tools load through it) — unless the
+    AgentGram server itself reported `failed`: ToolSearch then has nothing
+    to find. (A `pending` server is the normal deferred-startup race.) Only
+    enforced when the caller configured an MCP server (`expect_mcp`); a
+    session with no MCP config has nothing to reach.
     """
     if not expect_mcp:
         return True, "no MCP expected"
+    for server in session_tools.get("mcp_servers") or []:
+        if isinstance(server, dict) and server.get("name") == "agentgram" and server.get("status") == "failed":
+            return False, f"agentgram MCP server failed (tools={session_tools.get('total')})"
     if session_tools.get("mcp", 0) > 0:
         return True, "mcp tools attached"
     if session_tools.get("tool_search"):
@@ -689,6 +694,7 @@ class ClaudeCliBackend(ModelBackend):
         source_message_id: str = "",
         last_seen_message_id: str = "",
         force_agentgram: bool = False,
+        cleanup_paths: list[str] | None = None,
     ) -> str:
         """Build MCP config JSON string for --mcp-config.
 
@@ -709,6 +715,7 @@ class ClaudeCliBackend(ModelBackend):
             owner_id=owner_id,
             source_message_id=source_message_id,
             last_seen_message_id=last_seen_message_id,
+            cleanup_paths=cleanup_paths if cleanup_paths is not None else [],
         )
         _ = force_agentgram
         if agentgram_entry:
@@ -731,6 +738,7 @@ class ClaudeCliBackend(ModelBackend):
         owner_id: str,
         source_message_id: str,
         last_seen_message_id: str,
+        cleanup_paths: list[str],
     ) -> dict[str, Any] | None:
         if not self._mcp_server_script:
             logger.warning("MCP server script not found — AgentGram tools won't be available")
@@ -751,7 +759,11 @@ class ClaudeCliBackend(ModelBackend):
                 "AGENTGRAM_OWNER_ID": owner_id,
                 "AGENTGRAM_SOURCE_MESSAGE_ID": source_message_id,
                 "AGENTGRAM_LAST_SEEN_MESSAGE_ID": last_seen_message_id,
-                "AGENTGRAM_TOOL_DEFS": json.dumps(resolved_tools),
+                # A file path, not the JSON: one env string over 128 KiB
+                # (Linux MAX_ARG_STRLEN) fails the server's spawn outright.
+                "AGENTGRAM_TOOL_DEFS_FILE": write_temp(
+                    json.dumps(resolved_tools), ".json", "agentchat_tools_", cleanup_paths
+                ),
             },
         }
 
@@ -1123,6 +1135,7 @@ class ClaudeCliBackend(ModelBackend):
                 resolved_tools or [], conversation_id, task_id, owner_id,
                 source_message_id, last_seen_message_id,
                 force_agentgram=want_permission_prompt,
+                cleanup_paths=cleanup_paths,
             )
             if mcp_config:
                 # Always via a temp FILE, never inline in argv. The MCP config
@@ -1788,8 +1801,9 @@ class ClaudeCliBackend(ModelBackend):
 
         if _tools_unreachable:
             raise BackendToolsUnavailableError(
-                "CLI session had an MCP server configured but neither attached MCP tools "
-                "nor ToolSearch — the model would have run toolless"
+                "CLI session had an MCP server configured but its tools were unreachable "
+                "(server failed, or neither MCP tools nor ToolSearch attached) — the model "
+                "would have run toolless"
             )
 
         if returncode != 0:

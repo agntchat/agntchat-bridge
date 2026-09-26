@@ -33,7 +33,7 @@ def _backend() -> CodexCliBackend:
 
 def test_api_key_not_inline_in_mcp_overrides() -> None:
     b = _backend()
-    ov = b._mcp_overrides("conv-1", "task-1", "owner-1", "src-1", "seen-1", [{"name": "t"}])
+    ov = b._mcp_overrides("conv-1", "task-1", "owner-1", "src-1", "seen-1", [{"name": "t"}], [])
     joined = "\x00".join(ov)
     assert SECRET_API_KEY not in joined, "API key leaked inline into codex -c overrides (argv)"
     # No literal env.AGENTGRAM_API_KEY override either.
@@ -61,7 +61,7 @@ def test_no_key_injected_when_mcp_absent() -> None:
     b._mcp_server_script = None
     env = b._mcp_subprocess_env()
     assert _MCP_API_KEY_ENV not in env or env.get(_MCP_API_KEY_ENV) != SECRET_API_KEY
-    assert b._mcp_overrides("c", "t", "o", "s", "l", [{"name": "t"}]) == []
+    assert b._mcp_overrides("c", "t", "o", "s", "l", [{"name": "t"}], []) == []
 
 
 def test_full_base_cmd_has_no_key_in_argv() -> None:

@@ -83,10 +83,10 @@ def _toml_quote(s: str) -> str:
 
     The Codex CLI parses ``-c key=value`` value portions as TOML, so we
     must quote strings the way TOML expects. Basic strings use double
-    quotes. We escape every control character TOML cares about; the JSON
-    blob we pass via ``AGENTGRAM_TOOL_DEFS`` can contain newlines inside
-    tool descriptions, and TOML basic strings reject *unescaped* control
-    characters — silent CLI parse failures if we miss any.
+    quotes. We escape every control character TOML cares about; values
+    such as the system-prompt path or add_dirs can carry any of them, and
+    TOML basic strings reject *unescaped* control characters — silent CLI
+    parse failures if we miss any.
     """
     out: list[str] = []
     for c in s:
@@ -400,6 +400,7 @@ class CodexCliBackend(ModelBackend):
         source_message_id: str,
         last_seen_message_id: str,
         resolved_tools: list[dict[str, Any]],
+        cleanup_paths: list[str],
     ) -> list[str]:
         """Build -c flags that register the AgentGram MCP server inline.
 
@@ -420,7 +421,7 @@ class CodexCliBackend(ModelBackend):
         (owner-readable, and closed by per_user uid isolation +
         ProtectProc=invisible), never in /proc/<pid>/cmdline — parity with
         the claude_cli 0600-temp-file fix. The remaining literal `env` values
-        are non-secret (IDs, the public API URL, tool defs), so they stay as
+        are non-secret (IDs, the public API URL, the tool-defs file path), so they stay as
         -c overrides. `env_vars` is a recognized Codex config field (verified
         against the CLI); a Codex too old to know it ignores it rather than
         erroring, in which case the key simply isn't forwarded (the agent
@@ -440,7 +441,11 @@ class CodexCliBackend(ModelBackend):
             "AGENTGRAM_OWNER_ID": owner_id,
             "AGENTGRAM_SOURCE_MESSAGE_ID": source_message_id,
             "AGENTGRAM_LAST_SEEN_MESSAGE_ID": last_seen_message_id,
-            "AGENTGRAM_TOOL_DEFS": json.dumps(resolved_tools),
+            # A file path, not the JSON: the catalog outgrows the 128 KiB
+            # per-string argv/env cap (Linux MAX_ARG_STRLEN) for big rosters.
+            "AGENTGRAM_TOOL_DEFS_FILE": write_temp(
+                json.dumps(resolved_tools), ".json", "agentchat_codex_tools_", cleanup_paths
+            ),
         }
 
         args_toml = "[" + _toml_quote(self._mcp_server_script) + "]"
@@ -581,7 +586,7 @@ class CodexCliBackend(ModelBackend):
         if resolved_tools and self._mcp_server_script:
             cmd.extend(self._mcp_overrides(
                 conversation_id, task_id, owner_id, source_message_id,
-                last_seen_message_id, resolved_tools,
+                last_seen_message_id, resolved_tools, cleanup_paths,
             ))
 
         # Computer-use MCP server — independent of resolved_tools: the

@@ -19,7 +19,7 @@ import pytest
 
 @pytest.fixture
 def server(monkeypatch):
-    monkeypatch.setenv("AGENTGRAM_TOOL_DEFS", "[]")
+    monkeypatch.setenv("AGENTGRAM_TOOL_DEFS_FILE", "")
     import agntchat_mcp_server as srv  # noqa: PLC0415
 
     # Poll fast; the wait ceiling is per-test.
@@ -141,7 +141,7 @@ def test_cli_timeout_floor_outlasts_the_prompt_ceiling(monkeypatch):
     server's poll ceiling so a pending prompt is never cut off by the turn
     timeout before its verdict lands. Reads the real module constant — this
     test deliberately does not take the `server` fixture that shrinks it."""
-    monkeypatch.setenv("AGENTGRAM_TOOL_DEFS", "[]")
+    monkeypatch.setenv("AGENTGRAM_TOOL_DEFS_FILE", "")
     import agntchat_mcp_server as srv  # noqa: PLC0415
 
     from agentchat.backends.claude_cli import _PERMISSION_PROMPT_TIMEOUT  # noqa: PLC0415

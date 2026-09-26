@@ -449,4 +449,12 @@ different things.
 # end_turn is dropped by the server for every runtime, not here. Needs the
 # backend that settles stale drafts server-side; against an older one a
 # peer-stale reply is dropped instead of re-posted.
-BRIDGE_VERSION = "2.11.16"
+# 2.11.17 — the tool catalog reaches the AgentGram MCP server as a temp
+# file (AGENTGRAM_TOOL_DEFS_FILE), not an env string. Linux caps one
+# env/argv string at 128 KiB; a 125-tool GitHub-heavy catalog (137 KB) made
+# the server's spawn fail on every turn, and ToolSearch alone satisfied the
+# reachability check, so the GitHub agents ran toolless for four days
+# (2026-09-22..26). `_mcp_reachable` now refuses a session whose agentgram
+# server reported `failed`. Codex passes the file path too. Bridge-local:
+# the MCP server and bridge ship together, no backend change.
+BRIDGE_VERSION = "2.11.17"

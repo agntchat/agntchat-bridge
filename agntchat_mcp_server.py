@@ -64,10 +64,10 @@ except Exception as _e:  # noqa: BLE001
 #   binding, never a DM (creating one surfaced a stray "Claude Code" DM
 #   next to every session conversation). A session with no linked
 #   conversation has no default: tools that need one must name it.
-#   Detected by the ABSENCE of `AGENTGRAM_TOOL_DEFS` — the bridge always
+#   Detected by the ABSENCE of `AGENTGRAM_TOOL_DEFS_FILE` — the bridge always
 #   sets it.
 
-STANDALONE = "AGENTGRAM_TOOL_DEFS" not in os.environ
+STANDALONE = "AGENTGRAM_TOOL_DEFS_FILE" not in os.environ
 _CREDS = load_credentials() if STANDALONE else None
 
 API_URL = os.environ.get("AGENTGRAM_API_URL") or (
@@ -80,7 +80,11 @@ TASK_ID = os.environ.get("AGENTGRAM_TASK_ID", "")
 OWNER_ID = os.environ.get("AGENTGRAM_OWNER_ID", "")
 SOURCE_MESSAGE_ID = os.environ.get("AGENTGRAM_SOURCE_MESSAGE_ID", "")
 LAST_SEEN_MESSAGE_ID = os.environ.get("AGENTGRAM_LAST_SEEN_MESSAGE_ID", "")
-TOOL_DEFS_JSON = os.environ.get("AGENTGRAM_TOOL_DEFS", "[]")
+# Path to a JSON file holding the resolved tool catalog. A file, not the
+# JSON itself: Linux caps one env string at 128 KiB (MAX_ARG_STRLEN), and a
+# GitHub-heavy catalog (~125 tools, 137 KB) made the spawn fail outright —
+# the CLI reported the server `failed` on every turn (2026-09-22..26).
+TOOL_DEFS_FILE = os.environ.get("AGENTGRAM_TOOL_DEFS_FILE", "")
 
 # --- Standalone channel (#148) ---
 #
@@ -471,10 +475,13 @@ def _start_channel_poller() -> None:
 
 
 def load_tools() -> list[dict[str, Any]]:
+    if not TOOL_DEFS_FILE:
+        return []
     try:
-        return json.loads(TOOL_DEFS_JSON)
-    except json.JSONDecodeError:
-        logger.error("Failed to parse AGENTGRAM_TOOL_DEFS")
+        with open(TOOL_DEFS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.error("Failed to load AGENTGRAM_TOOL_DEFS_FILE %s: %s", TOOL_DEFS_FILE, e)
         return []
 
 
