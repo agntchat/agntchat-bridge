@@ -79,6 +79,7 @@ from agentchat.backends import (  # noqa: E402
     BackendAuthError,
     BackendInterruptedError,
     BackendRateLimitError,
+    BackendToolsUnavailableError,
     ChatMessage,
     create_backend,
 )
@@ -556,6 +557,51 @@ async def _record_cli_tool_uses(
         logger.debug("[%s] CLI tool-use telemetry POST failed: %s", executor_key, e)
 
 
+# Strong references for in-flight fault reports (asyncio keeps only weak ones).
+_fault_reports: set[asyncio.Task] = set()
+
+
+async def _post_runtime_fault(executor: Any, executor_key: str, payload: dict[str, Any]) -> None:
+    try:
+        await executor._post("/api/agents/me/runtime-faults", payload)  # type: ignore[attr-defined]
+    except Exception as e:
+        logger.debug("[%s] runtime-fault POST failed: %s", executor_key, e)
+
+
+async def _report_runtime_fault(
+    executor: Any,
+    executor_key: str,
+    kind: str,
+    msg: Any,
+    detail: str,
+) -> None:
+    """Tell the backend a turn failed, and why.
+
+    The backend used to infer runtime failures from their absence, and its
+    detectors shared the blind spot of the guard they backed up (the
+    2026-09-26 systemic review). The bridge knows the cause — the CLI said
+    the MCP server failed, the model call raised, the reply POST was
+    refused — so it reports it: a row the message trace and the daily
+    outcome report read, and an operator alert.
+
+    Fire-and-forget: the report runs as its own task, so a slow or
+    unreachable backend never delays the failure reply that follows it.
+    """
+    payload = {
+        "kind": kind,
+        "conversation_id": getattr(msg, "conversation_id", None),
+        "message_id": getattr(msg, "message_id", None),
+        "detail": (detail or "")[:1000],
+    }
+    task = asyncio.create_task(_post_runtime_fault(executor, executor_key, payload))
+    _fault_reports.add(task)
+    task.add_done_callback(_fault_reports.discard)
+
+
+def _model_fault_kind(error: BaseException) -> str:
+    return "tools_unreachable" if isinstance(error, BackendToolsUnavailableError) else "model_error"
+
+
 def _turn_stats(result: Any) -> dict[str, Any]:
     """Per-turn tool evidence for the backend: how many tool calls the turn
     made and whether the CLI session had the platform's tools reachable.
@@ -571,7 +617,21 @@ def _turn_stats(result: Any) -> dict[str, Any]:
     if session:
         stats["mcp_tools_attached"] = int(session.get("mcp") or 0)
         stats["tool_search"] = bool(session.get("tool_search"))
+        # The server's own status from the init event — the fact the
+        # backend counts no-MCP sessions by (ToolSearch alone proves nothing).
+        status = _agentgram_status(session)
+        if status:
+            stats["mcp_server"] = status
     return stats
+
+
+def _agentgram_status(session: dict[str, Any]) -> str | None:
+    """`connected` / `pending` / `failed` for the AgentGram MCP server, or
+    `absent` when the session expected it and the CLI never listed it."""
+    for server in session.get("mcp_servers") or []:
+        if isinstance(server, dict) and server.get("name") == "agentgram":
+            return str(server.get("status") or "unknown")
+    return "absent" if session.get("expect_mcp") else None
 
 
 async def _report_usage(
@@ -5158,11 +5218,12 @@ def run_single_agent(
                 result = None
                 _auth_failed = False
                 await _stream_cb.cancel()
-            except Exception:
+            except Exception as e:
                 logger.exception("[%s] Model call failed (tool_use)", executor_key)
                 result = None
                 _auth_failed = False
                 await _stream_cb.cancel()
+                await _report_runtime_fault(executor, executor_key, _model_fault_kind(e), msg, str(e))
 
             if result is None:
                 _tu_failed = True
@@ -5355,6 +5416,7 @@ def run_single_agent(
                     logger.warning("[%s] Failed to send tool_use reply: %s", executor_key, e)
                     reply_post_failed = True
                     await _stream_cb.cancel()
+                    await _report_runtime_fault(executor, executor_key, "reply_post_failed", msg, str(e))
             else:
                 await _stream_cb.cancel()
 
@@ -5399,10 +5461,11 @@ def run_single_agent(
                 logger.warning("[%s] Model call interrupted (code_action): %s", executor_key, e)
                 result = None
                 _auth_failed = False
-            except Exception:
+            except Exception as e:
                 logger.exception("[%s] Model call failed (code_action)", executor_key)
                 result = None
                 _auth_failed = False
+                await _report_runtime_fault(executor, executor_key, _model_fault_kind(e), msg, str(e))
 
             if result is None:
                 _ca_failed = True
@@ -5473,11 +5536,12 @@ def run_single_agent(
             result = None
             _auth_failed = False
             await _stream_cb.cancel()
-        except Exception:
+        except Exception as e:
             logger.exception("[%s] Model call failed", executor_key)
             result = None
             _auth_failed = False
             await _stream_cb.cancel()
+            await _report_runtime_fault(executor, executor_key, _model_fault_kind(e), msg, str(e))
 
         if result is not None:
             reply = result.text[:MAX_REPLY_CHARS]
@@ -5670,6 +5734,7 @@ def run_single_agent(
                 logger.warning("[%s] Failed to send reply: %s", executor_key, e)
                 reply_post_failed = True
                 await _stream_cb.cancel()
+                await _report_runtime_fault(executor, executor_key, "reply_post_failed", msg, str(e))
         else:
             # No reply to send — cancel the stream
             await _stream_cb.cancel()

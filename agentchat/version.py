@@ -461,4 +461,13 @@ different things.
 # renders its whole anchored window. The server stopped sending the key
 # (a "self-contained" message kept four messages and lost the room around
 # it, conv 32357cfd); an older bridge simply never sees it.
-BRIDGE_VERSION = "2.11.18"
+# 2.11.19 — runtime facts go to the backend. A failed turn reports why
+# (`POST /api/agents/me/runtime-faults`, fire-and-forget: tools_unreachable,
+# model_error, reply_post_failed on message turns; tools_unreachable only on
+# task turns), and the per-turn usage stats
+# carry the AgentGram MCP server's own init status (`mcp_server`). The
+# backend's no-MCP counter read 0 through the 09-22..26 toolless run
+# because it could only see "ToolSearch present"; now it sees `failed`.
+# Needs the backend endpoint; an older backend 404s the fault POST, which
+# is best-effort and logged at debug.
+BRIDGE_VERSION = "2.11.19"

@@ -42,7 +42,7 @@ import httpx
 
 from ._dedup import MessageDedup
 from .auth import TokenManager
-from .backends import BackendInterruptedError
+from .backends import BackendInterruptedError, BackendToolsUnavailableError
 from .backends._cli_utils import begin_shutdown
 from .backends.cli_runs import resumable_task_ids, run_key_var
 from .errors import AgentChatError, AuthError, StaleContextError
@@ -370,6 +370,8 @@ class ExecutorClient:
         self._agent_id = agent_id
         self._token_manager = TokenManager(base_url, agent_id, api_key)
         self._executor_key = executor_key
+        # In-flight runtime-fault reports (asyncio keeps only weak refs).
+        self._fault_reports: set[asyncio.Task] = set()
         self._display_name = display_name or executor_key
         # Identifies THIS process among every bridge that has ever held this
         # agent's executor row. The row's id is derived from
@@ -1206,6 +1208,29 @@ class ExecutorClient:
             self._current_activity = "idle"
             self._semaphore.release()
 
+    def _spawn_task_fault(self, task: GatewayTask, error: BaseException) -> None:
+        """Report in the background, so the failure card is not held up."""
+        reporter = asyncio.create_task(self._report_task_fault(task, error))
+        self._fault_reports.add(reporter)
+        reporter.add_done_callback(self._fault_reports.discard)
+
+    async def _report_task_fault(self, task: GatewayTask, error: BaseException) -> None:
+        """Best-effort `POST /api/agents/me/runtime-faults` for a task turn
+        whose tools were unreachable."""
+        kind = "tools_unreachable"
+        try:
+            await self._post(
+                "/api/agents/me/runtime-faults",
+                json={
+                    "kind": kind,
+                    "conversation_id": task.work_conversation_id or task.conversation_id,
+                    "detail": f"{type(error).__name__}: {error}"[:1000],
+                    "meta": {"task_id": task.task_id or task.id},
+                },
+            )
+        except Exception as report_error:
+            logger.debug("runtime-fault POST failed for task %s: %s", task.id, report_error)
+
     async def _handle_task(self, task: GatewayTask) -> None:
         """Accept, execute handler, and report result."""
         self._current_activity = f"processing_task:{task.id}"
@@ -1372,6 +1397,14 @@ class ExecutorClient:
 
         except Exception as e:
             logger.exception("Task %s failed: %s", task.task_id or task.id, e)
+            # A task turn that could not reach its tools is a runtime fact
+            # the backend cannot see from the failed task alone (the GitHub
+            # agents ran four days toolless, 2026-09-22..26). Only that: a
+            # task handler raises for many reasons (auth, rate limits, a
+            # refused completion) that already surface on the task itself,
+            # and reporting them all would page on every API-cap blackout.
+            if isinstance(e, BackendToolsUnavailableError):
+                self._spawn_task_fault(task, e)
             # asyncio.wait_for raises TimeoutError (asyncio.TimeoutError is an
             # alias of the builtin since Python 3.11) with an empty message —
             # f"{type(e).__name__}: {e}" would yield a useless "TimeoutError: "

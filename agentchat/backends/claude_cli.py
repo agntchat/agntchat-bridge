@@ -1621,6 +1621,7 @@ class ClaudeCliBackend(ModelBackend):
 
                     if event_type == "system" and event.get("subtype") == "init":
                         _session_tools = _session_tools_from_init(event)
+                        _session_tools["expect_mcp"] = expect_mcp
                         ok, why = _mcp_reachable(_session_tools, expect_mcp)
                         logger.info(
                             "CLI session tools: total=%s mcp=%s tool_search=%s servers=%s",
