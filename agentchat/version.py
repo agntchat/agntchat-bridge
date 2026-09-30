@@ -470,4 +470,10 @@ different things.
 # because it could only see "ToolSearch present"; now it sees `failed`.
 # Needs the backend endpoint; an older backend 404s the fault POST, which
 # is best-effort and logged at debug.
-BRIDGE_VERSION = "2.11.19"
+# 2.11.20 — tools the server marks `alwaysLoad` (present_card, end_turn,
+# complete-task, fail-task) are listed with `_meta["anthropic/alwaysLoad"]`,
+# so the Claude CLI hands them to the model up front instead of deferring
+# them behind ToolSearch. A card turn that never searched for present_card
+# answered in text (conv 4775f812, 2026-09-30). An older backend sends no
+# flag and nothing changes.
+BRIDGE_VERSION = "2.11.20"

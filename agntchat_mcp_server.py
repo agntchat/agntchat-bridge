@@ -646,11 +646,17 @@ def handle_request(req: dict[str, Any]) -> dict[str, Any] | None:
         mcp_tools = []
         for t in TOOLS:
             schema = t.get("inputSchema", t.get("input_schema", {}))
-            mcp_tools.append({
+            entry = {
                 "name": t["name"],
                 "description": t.get("description", ""),
                 "inputSchema": schema,
-            })
+            }
+            # The server names the tools a turn cannot do without
+            # (`alwaysLoad`); the Claude CLI then lists them up front
+            # instead of behind ToolSearch.
+            if t.get("alwaysLoad"):
+                entry["_meta"] = {"anthropic/alwaysLoad": True}
+            mcp_tools.append(entry)
         # Advertise the permission-prompt tool so the CLI can bind
         # --permission-prompt-tool to it. Its input is the CLI's standard
         # permission-request shape (tool being gated + that tool's input).

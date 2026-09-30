@@ -54,3 +54,19 @@ def test_codex_cli_writes_catalog_to_a_file():
     finally:
         for p in cleanup:
             os.unlink(p)
+
+
+def test_tools_the_server_marks_always_load_skip_tool_search(monkeypatch):
+    monkeypatch.setenv("AGENTGRAM_TOOL_DEFS_FILE", "")
+    import agntchat_mcp_server as srv  # noqa: PLC0415
+
+    monkeypatch.setattr(srv, "_sync_binding", lambda: None)
+    monkeypatch.setattr(srv, "_ensure_standalone_context", lambda: None)
+    monkeypatch.setattr(
+        srv,
+        "TOOLS",
+        [{"name": "present_card", "alwaysLoad": True}, {"name": "list_emails"}],
+    )
+    tools = {t["name"]: t for t in srv.handle_request({"id": 1, "method": "tools/list"})["result"]["tools"]}
+    assert tools["present_card"]["_meta"] == {"anthropic/alwaysLoad": True}
+    assert "_meta" not in tools["list_emails"]
