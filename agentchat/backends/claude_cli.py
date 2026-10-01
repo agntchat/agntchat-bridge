@@ -150,7 +150,9 @@ def _is_auth_failure(text: str | None) -> bool:
 # the signal and exits on its own reports the shell convention 128+N (143).
 # Prod has shown the 143 form; -15 is the documented POSIX one. Accept both
 # rather than betting on which layer does the reporting.
-_KILL_SIGNALS = (signal.SIGTERM, signal.SIGKILL)
+# `signal.SIGKILL` does not exist on Windows, and this runs at import — so
+# spell its POSIX number out rather than crash every Windows agent on start.
+_KILL_SIGNALS = (signal.SIGTERM, getattr(signal, "SIGKILL", 9))
 _SIGNAL_EXIT_CODES = frozenset(
     [-int(s) for s in _KILL_SIGNALS] + [128 + int(s) for s in _KILL_SIGNALS]
 )
@@ -331,7 +333,10 @@ def _kill_run(run: "cli_runs.CliRun") -> None:
         return
     if cli_runs.pid_alive(run.pid):
         try:
-            os.killpg(run.pid, signal.SIGKILL)
+            if hasattr(os, "killpg"):
+                os.killpg(run.pid, signal.SIGKILL)
+            else:
+                os.kill(run.pid, signal.SIGTERM)  # Windows: TerminateProcess
         except (ProcessLookupError, PermissionError, OSError):
             pass
 

@@ -476,4 +476,7 @@ different things.
 # them behind ToolSearch. A card turn that never searched for present_card
 # answered in text (conv 4775f812, 2026-09-30). An older backend sends no
 # flag and nothing changes.
-BRIDGE_VERSION = "2.11.20"
+# 2.11.21 — Windows: claude_cli no longer reads `signal.SIGKILL` at import
+# (it doesn't exist there), which crashed every Claude CLI agent on start
+# since 2.9.10; adopted-run kill falls back to `os.kill` without `killpg`.
+BRIDGE_VERSION = "2.11.21"

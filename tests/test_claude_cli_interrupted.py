@@ -42,7 +42,7 @@ def _backend() -> ClaudeCliBackend:
         143,  # 128 + SIGTERM — the form prod actually produced
         137,  # 128 + SIGKILL — systemd escalating after its stop timeout
         -int(signal.SIGTERM),  # POSIX/asyncio form
-        -int(signal.SIGKILL),
+        -9,  # -SIGKILL (spelled out: signal.SIGKILL doesn't exist on Windows)
     ],
 )
 def test_signal_exits_classify_as_interrupted(returncode):
