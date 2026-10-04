@@ -256,7 +256,7 @@ class ToolExecutor:
         executor_method = tool_def.get("executorMethod", tool_def.get("executor_method", tool_name))
 
         # send_message is deliberately EXCLUDED from conversation_id
-        # auto-injection. For lifecycle verbs (create_task, complete_thread,
+        # auto-injection. For lifecycle verbs (create_task, complete_huddle,
         # report_progress) a guessed conversation is recoverable; for visible
         # message delivery it silently reroutes a malformed model call into
         # whatever conversation the bridge happens to be processing — the
@@ -346,22 +346,22 @@ class ToolExecutor:
                 arguments["source_conversation_id"] = self._context.get("conversation_id")
             if not arguments.get("source_message_id"):
                 arguments["source_message_id"] = self._context.get("source_message_id")
-            # The task this turn is running: the thread remembers it so the
+            # The task this turn is running: the huddle remembers it so the
             # peer's reply resumes the task (see ExecutorClient.find_or_create_dm).
             if not arguments.get("opened_by_task_id") and self._context.get("task_id"):
                 arguments["opened_by_task_id"] = self._context.get("task_id")
 
-        # Auto-inject thread_id for thread lifecycle verbs when the model
+        # Auto-inject huddle_id for huddle lifecycle verbs when the model
         # didn't supply one (or used a placeholder). The current conversation
-        # IS the thread when the call originates from inside a thread; the
-        # backend errors with :not_a_thread if the agent is in a non-thread
+        # IS the huddle when the call originates from inside a huddle; the
+        # backend errors with :not_a_huddle if the agent is in a non-huddle
         # conversation, so falling back to ctx_conv_id is safe.
-        if executor_method == "complete_thread":
-            llm_thread_id = arguments.get("thread_id")
-            if _is_placeholder_conv_id(llm_thread_id):
+        if executor_method == "complete_huddle":
+            llm_huddle_id = arguments.get("huddle_id")
+            if _is_placeholder_conv_id(llm_huddle_id):
                 ctx_conv = self._context.get("conversation_id")
                 if ctx_conv:
-                    arguments["thread_id"] = ctx_conv
+                    arguments["huddle_id"] = ctx_conv
 
         # Auto-inject active_conversation_id for create_task so the backend's
         # anti-misrouting guard can apply the in-process descendant check
@@ -456,7 +456,7 @@ class ToolExecutor:
         # Arguments the SDK method could not take. The model is told, in the
         # result, which of its arguments went nowhere — a silent drop reads
         # as success: Gmail passed `message` to find_or_create_dm on
-        # 2026-09-21, the thread opened, the words were dropped here, and
+        # 2026-09-21, the huddle opened, the words were dropped here, and
         # the task closed as "pinged Kal, no answer yet".
         ignored = sorted(offered - set(kw_args)) if executor_method != "complete_task" else []
 
@@ -481,7 +481,7 @@ class ToolExecutor:
             logger.warning("Tool %s failed: %s", tool_name, e)
             result_str = json.dumps({"error": str(e)})
             call_failed = True
-            # On a failure the note matters MORE: Gmail's complete_thread
+            # On a failure the note matters MORE: Gmail's complete_huddle
             # retry "with content" was refused for having no content, and
             # nothing told the model its `content` had been dropped here.
             if ignored:

@@ -73,18 +73,18 @@ class RestClient:
         """Find or create a DM conversation with one or more other participants.
 
         `peer_id` is one participant id or a list; a list opens ONE agent
-        thread holding every peer (posted as `peerIds`) and requires
+        huddle holding every peer (posted as `peerIds`) and requires
         `source_conversation_id`. When called with a `source_conversation_id`
-        (agent-to-agent only) the server creates a *sourced thread* anchored
+        (agent-to-agent only) the server creates a *sourced huddle* anchored
         to that conversation. Pass a `topic` to deliberately open a new
-        thread for a distinct subject — same (members, source, topic) reuses
-        the same thread; different topic creates a separate concurrent thread.
+        huddle for a distinct subject — same (members, source, topic) reuses
+        the same huddle; different topic creates a separate concurrent huddle.
 
-        Pass a `goal` (one-sentence definition-of-done) to give the thread a
-        terminal target. The backend persists `metadata.thread_goal` and the
-        directive injection tells the agents in the thread to work toward
-        the goal and call `complete_thread` when achieved. Without a goal
-        the thread has no explicit completion target.
+        Pass a `goal` (one-sentence definition-of-done) to give the huddle a
+        terminal target. The backend persists `metadata.huddle_goal` and the
+        directive injection tells the agents in the huddle to work toward
+        the goal and call `complete_huddle` when achieved. Without a goal
+        the huddle has no explicit completion target.
         """
         body: dict[str, Any] = dm_peer_body(peer_id)
         if source_conversation_id:
@@ -92,9 +92,9 @@ class RestClient:
         if source_message_id:
             body["sourceMessageId"] = source_message_id
         if topic:
-            body["threadTopic"] = topic
+            body["huddleTopic"] = topic
         if goal:
-            body["threadGoal"] = goal
+            body["huddleGoal"] = goal
         data = await self._post("/api/conversations/dm", json=body)
         return Conversation.from_dict(data)
 
@@ -127,7 +127,7 @@ class RestClient:
         """Send a message to a conversation.
 
         Pass ``source_relay=True`` when this message is a summary posted from
-        inside an active agent thread back to the source/parent conversation.
+        inside an active huddle back to the source/parent conversation.
         The backend then suppresses turn-triggering for other agents so the
         relay doesn't echo into a ping-pong of duplicate responses.
         """
@@ -261,7 +261,7 @@ class RestClient:
     async def update_task_status(
         self, task_id: str, status: str, summary: str | None = None
     ) -> dict:
-        """Update a task's interim status (accepted, in_progress, blocked).
+        """Update a task's interim status (accepted, in_progress, waiting, blocked).
 
         Terminal statuses (complete/failed/cancelled/rejected) are refused by
         the backend for agents with 422 `terminal_via_complete_task` — use

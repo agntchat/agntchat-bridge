@@ -1703,7 +1703,7 @@ class ExecutorClient:
         raises `StaleContextError` with the new messages attached.
 
         Pass ``source_relay=True`` when this message is a summary posted from
-        inside an active agent thread back to the source/parent conversation.
+        inside an active huddle back to the source/parent conversation.
         The backend suppresses Wake + GatewayMessageDeliveryWorker for the
         relay so other agents don't get pulled into a ping-pong of duplicate
         responses. The human still sees the message via channel broadcast.
@@ -1890,41 +1890,41 @@ class ExecutorClient:
             last_seen_message_id=last_seen_message_id,
         )
 
-    async def complete_thread(
+    async def complete_huddle(
         self,
-        thread_id: str,
+        huddle_id: str,
         summary: str,
         *,
         outcome: str = "resolved",
         content: str | None = None,
     ) -> dict[str, Any]:
-        """Mark an agent thread as resolved and relay the summary to its parent.
+        """Mark an huddle as resolved and relay the summary to its parent.
 
-        `content` is the caller's own contribution, posted into the thread
+        `content` is the caller's own contribution, posted into the huddle
         by the server before the wrap so the resolution quality gate counts
         it (bridge 2.11.8; the MCP tool schema has carried it for longer).
 
-        Idempotent — calling on an already-resolved thread is a no-op.
+        Idempotent — calling on an already-resolved huddle is a no-op.
         Routes through the backend tool host (which calls into
-        `Agentchat.Messaging.complete_thread/3`). The platform handles the
+        `Agentchat.Messaging.complete_huddle/3`). The platform handles the
         source_relay, the parent-conversation StatusUpdate card, and the
-        thread UI state.
+        huddle UI state.
 
         Args:
-            thread_id: The agent thread to close. Use the conversation_id
-                you're currently in when called from inside the thread.
+            huddle_id: The huddle to close. Use the conversation_id
+                you're currently in when called from inside the huddle.
             summary: Short readable wrap-up posted to the parent.
             outcome: "resolved" (default), "agreed", "blocked", "deferred",
                 or "abandoned".
         """
         body: dict[str, Any] = {
-            "threadId": thread_id,
+            "huddleId": huddle_id,
             "summary": summary,
             "outcome": outcome,
         }
         if content:
             body["content"] = content
-        return await self._post("/api/threads/complete", json=body)
+        return await self._post("/api/huddles/complete", json=body)
 
     async def find_or_create_dm(
         self,
@@ -1940,28 +1940,28 @@ class ExecutorClient:
         """Find or create a DM conversation with one or more other participants.
 
         `opened_by_task_id` names the task this agent is working while it
-        opens the thread (bridge 2.11.9): the server hands that task back on
-        every delivery into the thread while it is open, so a peer's answer
+        opens the huddle (bridge 2.11.9): the server hands that task back on
+        every delivery into the huddle while it is open, so a peer's answer
         resumes the task rather than a taskless message turn.
 
-        `message` is an opening line the server posts into the thread as this
+        `message` is an opening line the server posts into the huddle as this
         agent in the same call (bridge 2.11.7; older servers ignore it).
 
         Returns the conversation object (with members).
         Use conversation["id"] to send messages to the DM.
 
         `peer_id` is one participant id or a list of them. A list opens ONE
-        agent thread with every peer in it (posted as `peerIds`) and needs
+        huddle with every peer in it (posted as `peerIds`) and needs
         source context — the server rejects several peers without it.
 
-        When source context is provided, the DM is created as an agent thread
+        When source context is provided, the DM is created as an huddle
         under the source conversation. Pass `topic` to deliberately open a new
-        thread for a distinct subject — same (members, source, topic) reuses
-        the same thread; different topic creates a separate concurrent thread.
+        huddle for a distinct subject — same (members, source, topic) reuses
+        the same huddle; different topic creates a separate concurrent huddle.
         When `topic` is omitted, falls back to anchoring on `source_message_id`.
 
-        Pass `goal` (definition-of-done) to give the thread a terminal target.
-        Agents in the thread will be told to call `complete_thread` when the
+        Pass `goal` (definition-of-done) to give the huddle a terminal target.
+        Agents in the huddle will be told to call `complete_huddle` when the
         goal is achieved, which triggers an auto-relay back to the parent.
         """
         body: dict[str, Any] = dm_peer_body(peer_id)
@@ -1970,9 +1970,9 @@ class ExecutorClient:
         if source_message_id:
             body["sourceMessageId"] = source_message_id
         if topic:
-            body["threadTopic"] = topic
+            body["huddleTopic"] = topic
         if goal:
-            body["threadGoal"] = goal
+            body["huddleGoal"] = goal
         if message:
             body["message"] = message
         if opened_by_task_id:

@@ -147,7 +147,7 @@ class Conversation:
 
 def dm_peer_body(peer_id: "str | list[str]") -> dict:
     """Wire shape for `POST /api/conversations/dm`: `peerId` for one peer,
-    `peerIds` for a shared multi-agent thread. Used by both the REST client
+    `peerIds` for a shared multi-huddle. Used by both the REST client
     and the executor SDK so they never drift."""
     if isinstance(peer_id, (list, tuple)):
         peers = [p for p in peer_id if p]

@@ -1379,8 +1379,8 @@ def _parse_dm_blocks(reply: str) -> tuple[str, list[dict[str, str]]]:
 
     Returns the reply with DM tags stripped and the list of DM blocks. The
     optional `topic` attribute lets the model open a distinct concurrent
-    thread for a separate subject — same (members, source, topic) reuses
-    the same thread, different topic opens a new one. `target` may name
+    huddle for a separate subject — same (members, source, topic) reuses
+    the same huddle, different topic opens a new one. `target` may name
     several agents comma-separated (`target="A, B"`); it is kept raw here
     and split by `_split_dm_targets` at routing time. The caller is
     responsible for posting any hidden turn-queue redirect signal.
@@ -1416,9 +1416,9 @@ def _parse_dm_blocks(reply: str) -> tuple[str, list[dict[str, str]]]:
             )
         target = (attrs.get("target") or "").strip()
         topic = (attrs.get("topic") or "").strip()
-        # `goal` is the thread's definition-of-done. When supplied the
-        # backend persists `metadata.thread_goal` so agents in the thread
-        # know what they're working toward and when to call complete_thread.
+        # `goal` is the huddle's definition-of-done. When supplied the
+        # backend persists `metadata.huddle_goal` so agents in the huddle
+        # know what they're working toward and when to call complete_huddle.
         goal = (attrs.get("goal") or "").strip()
         if target and content:
             block: dict[str, str] = {"target": target, "content": content}
@@ -1518,7 +1518,7 @@ def _split_dm_targets(target: str) -> list[str]:
     """`"A, B"` -> `["A", "B"]`: trimmed, empties dropped, case-insensitive dedup.
 
     Mirrors the server's `OutputEnvelope.split_dm_targets` so a tag naming
-    several agents opens ONE thread with all of them on every transport.
+    several agents opens ONE huddle with all of them on every transport.
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -1562,8 +1562,8 @@ async def _route_dm_blocks(
 
     Searches conversation_members first, then falls back to family_agents
     (which includes connected cross-owner agents from directives). A block
-    whose `target` names several agents opens ONE thread with all of them;
-    every name must resolve, or the block is skipped — a partial thread
+    whose `target` names several agents opens ONE huddle with all of them;
+    every name must resolve, or the block is skipped — a partial huddle
     would leave the model believing an absent agent is in the room (same
     rule as the server router, `Messaging.route_dm_block`).
     """
@@ -1614,15 +1614,15 @@ async def _route_dm_blocks(
     return sent_targets
 
 
-def _thread_redirect_notice(targets: list[str], behavioral_config: dict[str, Any] | None) -> str:
-    """Build the internal thread-redirect signal used for turn-queue summaries."""
+def _huddle_redirect_notice(targets: list[str], behavioral_config: dict[str, Any] | None) -> str:
+    """Build the internal huddle-redirect signal used for turn-queue summaries."""
     joined = ", ".join(targets)
     template = (behavioral_config or {}).get("dmRedirectTemplate") or "[Continuing in DM with {targets}]"
     notice = template.replace("{targets}", joined).strip()
     return notice or f"[Continuing in DM with {joined}]"
 
 
-async def _send_hidden_thread_redirect(
+async def _send_hidden_huddle_redirect(
     executor: ExecutorClient,
     conversation_id: str,
     targets: list[str],
@@ -1631,7 +1631,7 @@ async def _send_hidden_thread_redirect(
     behavioral_config: dict[str, Any] | None = None,
     last_seen_message_id: str | None = None,
 ) -> None:
-    """Persist a hidden EndTurn after thread creation instead of a visible ack.
+    """Persist a hidden EndTurn after huddle creation instead of a visible ack.
 
     The EndTurn keeps TurnQueue / loop-prevention state moving and preserves a
     "DM with ..." summary for later agents, while the backend hides internal
@@ -1639,7 +1639,7 @@ async def _send_hidden_thread_redirect(
 
     The body is the backend's canonical EndTurn payload
     (`MessageEnvelope.end_turn_payload/2`: JSON `{"reason", "message"}`) with
-    reason `thread_redirect`, so the reason is explicit on the wire — a
+    reason `huddle_redirect`, so the reason is explicit on the wire — a
     plain-text EndTurn would be summarized as "[EndTurn] Agent done" and its
     reason would fall back to `no_action_needed`, which `end_turn` refuses
     when a human addressed the agent.
@@ -1647,10 +1647,10 @@ async def _send_hidden_thread_redirect(
     if not targets:
         return
 
-    notice = _thread_redirect_notice(targets, behavioral_config)
-    payload = json.dumps({"reason": "thread_redirect", "message": notice})
+    notice = _huddle_redirect_notice(targets, behavioral_config)
+    payload = json.dumps({"reason": "huddle_redirect", "message": notice})
     msg_metadata = dict(metadata or {})
-    msg_metadata["thread_redirect_ack_hidden"] = True
+    msg_metadata["huddle_redirect_ack_hidden"] = True
 
     try:
         await executor.send_message(
@@ -1661,14 +1661,14 @@ async def _send_hidden_thread_redirect(
             metadata=msg_metadata,
             last_seen_message_id=last_seen_message_id,
         )
-        logger.info("[%s] Posted hidden thread redirect for %s", executor_key, ", ".join(targets))
+        logger.info("[%s] Posted hidden huddle redirect for %s", executor_key, ", ".join(targets))
     except StaleContextError as sce:
         logger.info(
-            "[%s] Dropped stale hidden thread redirect — %d new message(s) arrived during DM routing",
+            "[%s] Dropped stale hidden huddle redirect — %d new message(s) arrived during DM routing",
             executor_key, len(sce.new_messages),
         )
     except Exception as e:
-        logger.warning("[%s] Failed to post hidden thread redirect: %s", executor_key, e)
+        logger.warning("[%s] Failed to post hidden huddle redirect: %s", executor_key, e)
 
 
 async def _route_dm_blocks_and_settle(
@@ -1695,10 +1695,10 @@ async def _route_dm_blocks_and_settle(
         "the tag is stripped from your group message"), with no hidden
         redirect — whether or not the blocks routed;
       * nothing remained and >= 1 block routed -> the hidden
-        `EndTurn(thread_redirect)` is posted so the turn queue advances and
+        `EndTurn(huddle_redirect)` is posted so the turn queue advances and
         later agents see "[Continuing in DM with ...]"; returns None;
       * nothing remained and nothing routed -> the visible
-        "[Could not start agent thread with ...]" so the failure isn't silent.
+        "[Could not start huddle with ...]" so the failure isn't silent.
 
     Returns the text to post in the group conversation, or None when the
     hidden redirect was posted instead.
@@ -1719,7 +1719,7 @@ async def _route_dm_blocks_and_settle(
         return remaining
 
     if routed_targets:
-        await _send_hidden_thread_redirect(
+        await _send_hidden_huddle_redirect(
             executor,
             msg.conversation_id,
             routed_targets,
@@ -1731,7 +1731,7 @@ async def _route_dm_blocks_and_settle(
         return None
 
     targets = ", ".join(b["target"] for b in dm_blocks)
-    return f"[Could not start agent thread with {targets}]"
+    return f"[Could not start huddle with {targets}]"
 
 
 def _generate_task_title(content: str, max_len: int = 80) -> str:

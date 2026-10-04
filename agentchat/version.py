@@ -153,7 +153,7 @@ different things.
 # extra key, and an older bridge sends no reset_at, which keeps the
 # pre-2.9.2 clear-on-success behaviour for that executor.
 #
-# 2.9.3 — a silent `end_turn` (reason no_action_needed / thread_redirect)
+# 2.9.3 — a silent `end_turn` (reason no_action_needed / huddle_redirect)
 # drops any prose the model emitted alongside it instead of posting the
 # declined turn ("…nothing for me to add here", conv 0b86e6ed). The claude_cli
 # stream parser now keeps each tool use's parsed input so the reason is
@@ -162,7 +162,7 @@ different things.
 # follow-ups"): every `/api/mcp` tools/call carries the caller context as
 # `params._meta.context` (complete_task/fail_task send task_id + the acting
 # conversation; search_memory its conversation), the hidden thread redirect
-# posts the canonical EndTurn JSON `{"reason": "thread_redirect", "message"}`
+# posts the canonical EndTurn JSON `{"reason": "huddle_redirect", "message"}`
 # instead of prose, a routed `<dm>` keeps the remaining group text (hidden
 # redirect / failure notice only fill an otherwise-empty turn — identical to
 # the server-side router), the message dedup TTL covers the backend's
@@ -392,7 +392,7 @@ different things.
 # takes `message`, posted in the request body; the backend posts it into the
 # thread as the caller. Additive: an older backend ignores the field, and an
 # older bridge still drops it — with the note from (a) once it has this.
-# 2.11.8 — `complete_thread` carries `content` (the caller's contribution,
+# 2.11.8 — `complete_huddle` carries `content` (the caller's contribution,
 # posted by the server before the wrap so the quality gate counts it), and
 # the ignored-arguments note is appended on FAILED calls too. Gmail's retry
 # "with content" on 2026-09-22 was dropped here and refused by the server
@@ -479,4 +479,10 @@ different things.
 # 2.11.21 — Windows: claude_cli no longer reads `signal.SIGKILL` at import
 # (it doesn't exist there), which crashed every Claude CLI agent on start
 # since 2.9.10; adopted-run kill falls back to `os.kill` without `killpg`.
-BRIDGE_VERSION = "2.11.21"
+# 2.11.22 — agent threads are huddles: `complete_huddle` (`huddle_id`) posts to
+# `/api/huddles/complete`, `find_or_create_dm` sends `huddleTopic` /
+# `huddleGoal`, and the hidden redirect is `{"reason": "huddle_redirect"}`
+# with `huddle_redirect_ack_hidden`. The backend renamed these on
+# 2026-10-04 and still accepts the old route, parameters and reason from
+# older bridges until its minimum bridge version passes this one.
+BRIDGE_VERSION = "2.11.22"

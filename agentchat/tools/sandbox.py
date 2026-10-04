@@ -143,11 +143,11 @@ def find_or_create_dm(participant_id, *, source_conversation_id=None,
 
     Aligned with the main SDK (`agentchat.rest.RestClient.find_or_create_dm`):
     posts to /api/conversations/dm with `peerId` in the body. Pass
-    `source_conversation_id` to open a sourced agent thread anchored under
+    `source_conversation_id` to open a sourced huddle anchored under
     that parent (agent-to-agent only). Pass `topic` to deliberately open a
-    new thread for a distinct subject; same (pair, source, topic) reuses
-    the same thread. Pass `goal` to stamp a definition-of-done so agents
-    in the thread know when to call `complete_thread`.
+    new huddle for a distinct subject; same (pair, source, topic) reuses
+    the same huddle. Pass `goal` to stamp a definition-of-done so agents
+    in the huddle know when to call `complete_huddle`.
     """
     body = {"peerId": participant_id}
     if source_conversation_id:
@@ -155,24 +155,24 @@ def find_or_create_dm(participant_id, *, source_conversation_id=None,
     if source_message_id:
         body["sourceMessageId"] = source_message_id
     if topic:
-        body["threadTopic"] = topic
+        body["huddleTopic"] = topic
     if goal:
-        body["threadGoal"] = goal
+        body["huddleGoal"] = goal
     return _api("POST", "/api/conversations/dm", body)
 
 
-def complete_thread(thread_id, summary, *, outcome="resolved"):
-    """Mark an agent thread as resolved and deliver the summary to its parent.
+def complete_huddle(huddle_id, summary, *, outcome="resolved"):
+    """Mark an huddle as resolved and deliver the summary to its parent.
 
-    Idempotent — already-resolved threads are a no-op. The platform posts a
-    `thread_completed` StatusUpdate card (carrying the summary) into the
-    parent and wakes the agent that opened the thread so they continue
+    Idempotent — already-resolved huddles are a no-op. The platform posts a
+    `huddle_completed` StatusUpdate card (carrying the summary) into the
+    parent and wakes the agent that opened the huddle so they continue
     the parent work. No separate text relay is posted.
     """
     return _api(
         "POST",
-        "/api/threads/complete",
-        {"threadId": thread_id, "summary": summary, "outcome": outcome},
+        "/api/huddles/complete",
+        {"huddleId": huddle_id, "summary": summary, "outcome": outcome},
     )
 
 

@@ -3,13 +3,13 @@
 Bridge follow-up 3 of the 2026-09-06 coordination audit. The DM ROUTING
 directive promises "the tag is stripped from your group message", and the
 server-side router (`Messaging.route_dm_blocks/6`) keeps the remaining text,
-posting the hidden `EndTurn(thread_redirect)` only when nothing remains and
+posting the hidden `EndTurn(huddle_redirect)` only when nothing remains and
 the visible failure notice only when nothing remains AND nothing routed.
 `_route_dm_blocks_and_settle` must match that exactly; before this the
 bridge dropped the whole reply once any target routed.
 
 Follow-up 2: the hidden redirect is the canonical EndTurn JSON payload
-(`{"reason": "thread_redirect", "message": ...}`), not prose.
+(`{"reason": "huddle_redirect", "message": ...}`), not prose.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import pytest
 from agent_bridge import (
     _parse_dm_blocks,
     _route_dm_blocks_and_settle,
-    _send_hidden_thread_redirect,
+    _send_hidden_huddle_redirect,
 )
 
 MEMBERS = [
@@ -104,12 +104,12 @@ class TestSettle:
         (end_turn,) = _end_turn_calls(ex)
         assert end_turn.args[0] == "conv-1"
         assert json.loads(end_turn.args[1]) == {
-            "reason": "thread_redirect",
+            "reason": "huddle_redirect",
             "message": "[Continuing in DM with Bob]",
         }
         assert end_turn.kwargs["content_type"] == "structured"
         assert end_turn.kwargs["metadata"] == {
-            "model": "m", "stream_id": "s1", "thread_redirect_ack_hidden": True,
+            "model": "m", "stream_id": "s1", "huddle_redirect_ack_hidden": True,
         }
         assert end_turn.kwargs["last_seen_message_id"] == "m2"
 
@@ -134,14 +134,14 @@ class TestSettle:
         ex = _executor()
         reply, blocks = _parse_dm_blocks('<dm target="Nobody">x</dm><dm target="Ghost">y</dm>')
         out = await _settle(ex, reply, blocks)
-        assert out == "[Could not start agent thread with Nobody, Ghost]"
+        assert out == "[Could not start huddle with Nobody, Ghost]"
         ex.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dm_open_failure_with_nothing_remaining_posts_failure_notice(self):
         ex = _executor(dm_id=None)  # find_or_create_dm returned no id
         out = await _settle(ex, "", [{"target": "Bob", "content": "x"}])
-        assert out == "[Could not start agent thread with Bob]"
+        assert out == "[Could not start huddle with Bob]"
         ex.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -192,7 +192,7 @@ class TestMultiTarget:
     async def test_one_unresolvable_name_skips_the_whole_block(self):
         ex = _executor()
         out = await _settle(ex, "", [{"target": "Bob, Nobody", "content": "x"}])
-        assert out == "[Could not start agent thread with Bob, Nobody]"
+        assert out == "[Could not start huddle with Bob, Nobody]"
         ex.find_or_create_dm.assert_not_awaited()
         ex.send_message.assert_not_awaited()
 
@@ -207,7 +207,7 @@ class TestHiddenRedirectPayload:
     @pytest.mark.asyncio
     async def test_canonical_end_turn_json(self):
         ex = _executor()
-        await _send_hidden_thread_redirect(
+        await _send_hidden_huddle_redirect(
             ex, "conv-9", ["Bob", "Eve"], "exec-key",
             metadata={"model": "m"}, last_seen_message_id="m7",
         )
@@ -215,34 +215,34 @@ class TestHiddenRedirectPayload:
         call = ex.send_message.await_args
         assert call.args[0] == "conv-9"
         assert json.loads(call.args[1]) == {
-            "reason": "thread_redirect",
+            "reason": "huddle_redirect",
             "message": "[Continuing in DM with Bob, Eve]",
         }
         assert call.kwargs["content_type"] == "structured"
         assert call.kwargs["message_type"] == "EndTurn"
-        assert call.kwargs["metadata"] == {"model": "m", "thread_redirect_ack_hidden": True}
+        assert call.kwargs["metadata"] == {"model": "m", "huddle_redirect_ack_hidden": True}
         assert call.kwargs["last_seen_message_id"] == "m7"
 
     @pytest.mark.asyncio
     async def test_server_template_is_honoured_inside_the_payload(self):
         ex = _executor()
-        await _send_hidden_thread_redirect(
+        await _send_hidden_huddle_redirect(
             ex, "conv-9", ["Bob"], "exec-key",
             behavioral_config={"dmRedirectTemplate": "[Now talking to {targets}]"},
         )
         assert json.loads(ex.send_message.await_args.args[1]) == {
-            "reason": "thread_redirect",
+            "reason": "huddle_redirect",
             "message": "[Now talking to Bob]",
         }
 
     @pytest.mark.asyncio
     async def test_no_targets_posts_nothing(self):
         ex = _executor()
-        await _send_hidden_thread_redirect(ex, "conv-9", [], "exec-key")
+        await _send_hidden_huddle_redirect(ex, "conv-9", [], "exec-key")
         ex.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_send_failure_is_swallowed(self):
         ex = _executor()
         ex.send_message = AsyncMock(side_effect=RuntimeError("down"))
-        await _send_hidden_thread_redirect(ex, "conv-9", ["Bob"], "exec-key")
+        await _send_hidden_huddle_redirect(ex, "conv-9", ["Bob"], "exec-key")

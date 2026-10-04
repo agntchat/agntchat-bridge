@@ -10,7 +10,7 @@ auto-injection: a placeholder/missing conversation_id on send_message
 returns a structured error (mirroring the backend MCP handler
 `Agentchat.MCP.Tools.Messaging.execute_send`) instead of silently
 posting into the ambient conversation. Lifecycle verbs (create_task,
-complete_thread, report_progress, ...) keep the injection.
+complete_huddle, report_progress, ...) keep the injection.
 """
 
 from __future__ import annotations
