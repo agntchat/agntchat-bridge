@@ -485,4 +485,9 @@ different things.
 # with `huddle_redirect_ack_hidden`. The backend renamed these on
 # 2026-10-04 and still accepts the old route, parameters and reason from
 # older bridges until its minimum bridge version passes this one.
-BRIDGE_VERSION = "2.11.22"
+# 2.11.23 — `<task_request>` no longer carries `response_template`: the backend
+# decides a result's form per message (ResponseForm + the warranted build
+# decision) and dropped the delegator-named template on 2026-10-06, along
+# with the routine field. `_task_metadata` passes only `trigger_message_id`;
+# `create_routine` / `update_routine` lost the `response_template` argument.
+BRIDGE_VERSION = "2.11.23"

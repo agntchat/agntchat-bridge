@@ -999,20 +999,17 @@ def _task_metadata(
     tr: dict[str, Any],
     trigger_message_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Extract metadata from a task_request dict for create_task.
+    """Metadata for create_task from a task_request dict.
 
-    Passes response_template through so the receiving agent knows
-    what output format the delegator wants. When provided,
-    trigger_message_id stamps the human message that triggered this
-    task request so the backend can dedup peer collisions
+    When provided, trigger_message_id stamps the human message that
+    triggered this task request so the backend can dedup peer collisions
     (TaskAutoCreateWorker uses this to absorb same-trigger duplicates).
+    Nothing else from the block rides along: the backend decides a
+    result's form per message, never from a field the delegator set.
     """
-    meta: dict[str, Any] = {}
-    if tr.get("response_template"):
-        meta["response_template"] = tr["response_template"]
     if trigger_message_id:
-        meta["trigger_message_id"] = trigger_message_id
-    return meta if meta else None
+        return {"trigger_message_id": trigger_message_id}
+    return None
 
 
 def parse_tool_calls(text: str) -> tuple[str, list[dict[str, Any]]]:

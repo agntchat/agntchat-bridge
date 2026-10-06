@@ -2892,7 +2892,6 @@ class ExecutorClient:
         report_to: str | None = None,
         max_runs: int | None = None,
         expires_at: str | None = None,
-        response_template: str | None = None,
     ) -> dict[str, Any]:
         """Create a new scheduled routine.
 
@@ -2905,7 +2904,6 @@ class ExecutorClient:
             report_to: Conversation ID for posting results.
             max_runs: Max executions (None = unlimited).
             expires_at: ISO 8601 expiration datetime.
-            response_template: Template name for formatting output.
         """
         body: dict[str, Any] = {
             "name": name,
@@ -2921,8 +2919,6 @@ class ExecutorClient:
             body["max_runs"] = max_runs
         if expires_at:
             body["expires_at"] = expires_at
-        if response_template:
-            body["response_template"] = response_template
         return await self._post("/api/routines", json=body)
 
     async def update_routine(
@@ -2937,7 +2933,6 @@ class ExecutorClient:
         report_to: str | None = None,
         max_runs: int | None = None,
         expires_at: str | None = None,
-        response_template: str | None = None,
     ) -> dict[str, Any]:
         """Update an existing routine's settings."""
         body: dict[str, Any] = {}
@@ -2957,8 +2952,6 @@ class ExecutorClient:
             body["max_runs"] = max_runs
         if expires_at is not None:
             body["expires_at"] = expires_at
-        if response_template is not None:
-            body["response_template"] = response_template
         return await self._patch(f"/api/routines/{routine_id}", json=body)
 
     async def delete_routine(self, routine_id: str) -> dict[str, Any]:

@@ -30,7 +30,6 @@ async def test_submit_task_requests_payload_contract(executor):
             "title": "Find hotels",
             "description": "In Chicago",
             "assigned_to": ["agent-2"],
-            "response_template": "table",
         }
     ]
 
