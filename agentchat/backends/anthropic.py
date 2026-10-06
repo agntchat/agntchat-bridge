@@ -30,6 +30,25 @@ logger = logging.getLogger("agentchat.backends.anthropic")
 
 _DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _DEFAULT_MAX_TOKENS = 16384
+
+# Prompt-cache TTLs the API accepts. The server picks one per turn
+# (behavioralConfig.promptCache.anthropicTtl) from its prefix-stability
+# horizon; "5m" is what a bridge runs on before the first directive lands.
+_CACHE_TTLS = ("5m", "1h")
+_DEFAULT_CACHE_TTL = "5m"
+
+
+def _cache_marker(ttl: str) -> dict[str, str]:
+    """The ``cache_control`` block for ``ttl``.
+
+    The 5-minute TTL is the API default and is sent as the bare marker, so
+    the wire shape of a 5m request is unchanged from before TTLs were
+    server-chosen; the 1-hour TTL is explicit.
+    """
+    if ttl == "1h":
+        return {"type": "ephemeral", "ttl": "1h"}
+    return {"type": "ephemeral"}
+
 _DEFAULT_TIMEOUT = 300
 
 # Patterns detected in streaming text to report semantic progress.
@@ -99,9 +118,28 @@ class AnthropicBackend(ModelBackend):
             _try_int(os.getenv("ANTHROPIC_CONTEXT_WINDOW")) or 200_000
         )
 
+        # Prompt-cache TTL on every breakpoint this backend places. Set per
+        # turn from the server's behavioralConfig.promptCache.anthropicTtl
+        # (set_prompt_cache_ttl); "5m" until the first directive arrives.
+        self._cache_ttl: str = _DEFAULT_CACHE_TTL
+
     @property
     def model_name(self) -> str:
         return self._model
+
+    def set_prompt_cache_ttl(self, ttl: str) -> None:
+        """Apply the server's prompt-cache TTL (``"5m"`` | ``"1h"``).
+
+        The server derives it from its prefix-stability horizon — the window
+        in which the DirectivesCache, the idle memory summary and the
+        bridge's history window are all held still — so the Anthropic entry
+        outlives exactly the bytes it caches. The same TTL goes on all four
+        breakpoints (the API requires longer TTLs to come first, which one
+        TTL satisfies trivially). Unknown values are ignored, keeping the
+        current TTL, so a malformed directive cannot turn caching off.
+        """
+        if ttl in _CACHE_TTLS:
+            self._cache_ttl = ttl
 
     def set_server_tool_betas(self, betas: list[str]) -> None:
         """Record the `anthropic-beta` header flags required by the agent's
@@ -126,19 +164,20 @@ class AnthropicBackend(ModelBackend):
         return kwargs
 
     @staticmethod
-    def _cached_system(system_prompt: str) -> list[dict[str, Any]]:
+    def _cached_system(system_prompt: str, ttl: str = _DEFAULT_CACHE_TTL) -> list[dict[str, Any]]:
         """Wrap the system prompt in a cache_control block for prompt caching.
 
-        Anthropic's ephemeral cache has a 5-minute TTL and a ~1024-token minimum.
-        For a conversation with a 15k-token system prompt, this drops subsequent
-        first-token latency from ~1.5-2s to ~100-200ms. The cache is keyed on
-        the exact text, so any change invalidates it.
+        Anthropic's ephemeral cache lives for ``ttl`` (5 minutes or 1 hour,
+        chosen by the server — see set_prompt_cache_ttl) and has a per-model
+        minimum prefix size. For a conversation with a 15k-token system
+        prompt, a hit drops first-token latency from ~1.5-2s to ~100-200ms.
+        The cache is keyed on the exact text, so any change invalidates it.
         """
         return [
             {
                 "type": "text",
                 "text": system_prompt,
-                "cache_control": {"type": "ephemeral"},
+                "cache_control": _cache_marker(ttl),
             }
         ]
 
@@ -147,12 +186,14 @@ class AnthropicBackend(ModelBackend):
     _CACHEABLE_BLOCK_TYPES = {"text", "image", "tool_result", "tool_use", "document"}
 
     @staticmethod
-    def _cached_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _cached_tools(
+        tools: list[dict[str, Any]], ttl: str = _DEFAULT_CACHE_TTL
+    ) -> list[dict[str, Any]]:
         """Mark the last tool definition with cache_control.
 
         With a breakpoint only at the end of the system prompt, the tools
         array is part of the cached prefix implicitly — but marking it
-        separately means a system-prompt change (5-min directive refresh)
+        separately means a system-prompt change (a directive recompute)
         still reuses the cached tools segment. Copies the last def so the
         shared _tool_defs list is never mutated.
         """
@@ -160,12 +201,14 @@ class AnthropicBackend(ModelBackend):
             return tools
         cached = list(tools)
         last = dict(cached[-1])
-        last["cache_control"] = {"type": "ephemeral"}
+        last["cache_control"] = _cache_marker(ttl)
         cached[-1] = last
         return cached
 
     @classmethod
-    def _apply_cache_boundary(cls, api_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _apply_cache_boundary(
+        cls, api_messages: list[dict[str, Any]], ttl: str = _DEFAULT_CACHE_TTL
+    ) -> list[dict[str, Any]]:
         """Pin a cache breakpoint at the bridge-flagged stable-history boundary.
 
         The bridge marks the last message of the *stable* rendered history
@@ -194,7 +237,7 @@ class AnthropicBackend(ModelBackend):
         if isinstance(content, str):
             if content.strip():
                 msg["content"] = [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                    {"type": "text", "text": content, "cache_control": _cache_marker(ttl)}
                 ]
         elif isinstance(content, list) and content:
             last_block = content[-1]
@@ -203,12 +246,14 @@ class AnthropicBackend(ModelBackend):
                 and last_block.get("type") in cls._CACHEABLE_BLOCK_TYPES
             ):
                 marked = dict(last_block)
-                marked["cache_control"] = {"type": "ephemeral"}
+                marked["cache_control"] = _cache_marker(ttl)
                 msg["content"] = content[:-1] + [marked]
         return api_messages
 
     @classmethod
-    def _with_history_cache(cls, api_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _with_history_cache(
+        cls, api_messages: list[dict[str, Any]], ttl: str = _DEFAULT_CACHE_TTL
+    ) -> list[dict[str, Any]]:
         """Mark the last message's last content block with cache_control.
 
         This caches the conversation history prefix: the next turn (or the
@@ -228,7 +273,7 @@ class AnthropicBackend(ModelBackend):
             if not content.strip():
                 return api_messages
             last["content"] = [
-                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+                {"type": "text", "text": content, "cache_control": _cache_marker(ttl)}
             ]
         elif isinstance(content, list) and content:
             blocks = list(content)
@@ -239,7 +284,7 @@ class AnthropicBackend(ModelBackend):
             ):
                 return api_messages
             marked = dict(last_block)
-            marked["cache_control"] = {"type": "ephemeral"}
+            marked["cache_control"] = _cache_marker(ttl)
             blocks[-1] = marked
             last["content"] = blocks
         else:
@@ -342,7 +387,7 @@ class AnthropicBackend(ModelBackend):
             response = await self._client.messages.create(
                 model=self._request_model(),
                 max_tokens=self._request_max_tokens(),
-                system=self._cached_system(system_prompt),
+                system=self._cached_system(system_prompt, ttl=self._cache_ttl),
                 messages=[{"role": "user", "content": user_prompt}],
                 **self._sampling_kwargs(),
             )
@@ -380,8 +425,10 @@ class AnthropicBackend(ModelBackend):
         """
         api_messages = self._with_history_cache(
             self._apply_cache_boundary(
-                _coalesce_messages(_translate_attachments(messages))
-            )
+                _coalesce_messages(_translate_attachments(messages)),
+                ttl=self._cache_ttl,
+            ),
+            ttl=self._cache_ttl,
         )
         start = time.monotonic()
 
@@ -402,7 +449,7 @@ class AnthropicBackend(ModelBackend):
             response = await self._client.messages.create(
                 model=self._request_model(),
                 max_tokens=self._request_max_tokens(),
-                system=self._cached_system(system_prompt),
+                system=self._cached_system(system_prompt, ttl=self._cache_ttl),
                 messages=api_messages,
                 **self._sampling_kwargs(),
             )
@@ -465,7 +512,7 @@ class AnthropicBackend(ModelBackend):
         async with self._client.messages.stream(
             model=self._request_model(),
             max_tokens=self._request_max_tokens(),
-            system=self._cached_system(system_prompt),
+            system=self._cached_system(system_prompt, ttl=self._cache_ttl),
             messages=api_messages,
             **self._sampling_kwargs(),
         ) as stream:
@@ -579,14 +626,14 @@ class AnthropicBackend(ModelBackend):
         # end of history — the next iteration/turn re-reads the whole prefix
         # at the cache-read rate. Together with the system-prompt breakpoint
         # that's 3 of Anthropic's 4 allowed markers.
-        api_messages = self._with_history_cache(api_messages)
-        tools = self._cached_tools(tools)
+        api_messages = self._with_history_cache(api_messages, ttl=self._cache_ttl)
+        tools = self._cached_tools(tools, ttl=self._cache_ttl)
 
         if not on_progress or not hasattr(self._client.messages, "stream"):
             return await self._client.messages.create(
                 model=self._request_model(),
                 max_tokens=self._request_max_tokens(),
-                system=self._cached_system(system_prompt),
+                system=self._cached_system(system_prompt, ttl=self._cache_ttl),
                 messages=api_messages,
                 tools=tools,
                 extra_headers=extra_headers,
@@ -602,7 +649,7 @@ class AnthropicBackend(ModelBackend):
         async with self._client.messages.stream(
             model=self._request_model(),
             max_tokens=self._request_max_tokens(),
-            system=self._cached_system(system_prompt),
+            system=self._cached_system(system_prompt, ttl=self._cache_ttl),
             messages=api_messages,
             tools=tools,
             extra_headers=extra_headers,
@@ -682,7 +729,8 @@ class AnthropicBackend(ModelBackend):
             compaction_config, self._context_window, self._max_tokens,
         )
         api_messages = self._apply_cache_boundary(
-            _coalesce_messages(_translate_attachments(messages))
+            _coalesce_messages(_translate_attachments(messages)),
+            ttl=self._cache_ttl,
         )
         all_tool_calls: list[ToolCall] = []
         total_usage = {

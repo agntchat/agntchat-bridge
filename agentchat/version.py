@@ -490,4 +490,12 @@ different things.
 # decision) and dropped the delegator-named template on 2026-10-06, along
 # with the routine field. `_task_metadata` passes only `trigger_message_id`;
 # `create_routine` / `update_routine` lost the `response_template` argument.
-BRIDGE_VERSION = "2.11.23"
+# 2.11.24 — prompt-cache horizon is server-owned: every turn's
+# `behavioralConfig.promptCache` carries `anthropicTtl` ("5m" | "1h"), put on
+# all four cache_control breakpoints by the Anthropic API backend
+# (set_prompt_cache_ttl), and `historyWindowTtlSeconds`, applied to the
+# _cached_get_messages window — so the Anthropic entry, the backend's own
+# caches and the history window expire on one clock instead of four
+# hard-coded five-minute ones. Older bridges keep the 5-minute defaults;
+# harmless during the roll (they just miss the longer cache).
+BRIDGE_VERSION = "2.11.24"

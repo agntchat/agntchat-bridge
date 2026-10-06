@@ -428,6 +428,19 @@ class ModelBackend(ABC):
         """
         return None
 
+    def set_prompt_cache_ttl(self, ttl: str) -> None:
+        """Update the prompt-cache TTL requested on subsequent generations.
+
+        Backend = single source of truth: the bridge calls this each turn with
+        the server-delivered ``behavioralConfig.promptCache.anthropicTtl``
+        (``"5m"`` or ``"1h"``), the Anthropic TTL that covers the server's
+        prefix-stability horizon — the window in which the server promises
+        not to move the cached prefix on its own. No-op for backends that
+        place no cache markers (CLI backends own their own requests); the
+        Anthropic API backend overrides it.
+        """
+        return None
+
     def set_computer_use(
         self, enabled: bool, allowed_apps: "list[str] | None" = None
     ) -> None:

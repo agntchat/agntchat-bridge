@@ -1913,8 +1913,27 @@ _CONVERSATIONAL_CONTENT_TYPES = {"text", "file", "structured", "status_update"}
 # avoid re-fetching the full history on every message. Keyed by conversation_id.
 # Each entry: {"messages": [...], "latest_id": "...", "at": timestamp}
 _conv_message_cache: dict[str, dict[str, Any]] = {}
-_CONV_CACHE_TTL = 300  # 5 minutes — stale cache falls back to full fetch
+# Window TTL — a stale window falls back to a full fetch, which REBASES the
+# window and so changes the rendered-history prefix the model sees. The
+# server owns the value (behavioralConfig.promptCache.historyWindowTtlSeconds,
+# applied per turn by _set_conv_cache_ttl): it is the server's prefix-
+# stability horizon, the same window in which it holds the system prompt
+# still and the Anthropic TTL it asks this bridge to request. Before the
+# first directive lands we run on the API's 5-minute default.
+_CONV_CACHE_TTL_DEFAULT = 300
+_conv_cache_ttl: float = _CONV_CACHE_TTL_DEFAULT
 _CONV_CACHE_MAX = 50   # Max conversations cached
+
+
+def _set_conv_cache_ttl(seconds: Any) -> None:
+    """Apply the server's history-window TTL; non-positive/garbage is ignored."""
+    global _conv_cache_ttl
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return
+    if value > 0:
+        _conv_cache_ttl = value
 
 
 async def _cached_get_messages(
@@ -1939,8 +1958,8 @@ async def _cached_get_messages(
     turn, so the Anthropic prompt cache never hit across turns and the whole
     history re-billed as a cache write. Rebases now happen at most once per
     `limit` messages — and the TTL-expired full fetch also rebases, which is
-    free cache-wise because the 5-minute prompt cache has expired by then
-    anyway.
+    free cache-wise because the window TTL IS the server's prefix-stability
+    horizon: the Anthropic entry it asked us to request has expired by then.
     """
     import time as _time
 
@@ -1948,7 +1967,7 @@ async def _cached_get_messages(
     now = _time.monotonic()
 
     # Check cache freshness
-    if cache_entry and (now - cache_entry["at"]) < _CONV_CACHE_TTL:
+    if cache_entry and (now - cache_entry["at"]) < _conv_cache_ttl:
         cached_msgs = cache_entry["messages"]
         latest_ts = cache_entry.get("latest_ts")
 
@@ -4359,6 +4378,29 @@ def run_single_agent(
             allowed if isinstance(allowed, list) else None,
         )
 
+    def _sync_prompt_cache(behavioral_config: dict[str, Any] | None) -> None:
+        """Apply the server's prompt-cache horizon to this turn.
+
+        Same model as the two above: every turn carries
+        ``behavioralConfig.promptCache`` — ``anthropicTtl`` for the cache
+        markers the API backend places and ``historyWindowTtlSeconds`` for
+        the message window in _cached_get_messages. Both derive from one
+        server-side clock (the prefix-stability horizon) so the Anthropic
+        entry, the server's own caches and this window all expire together;
+        the bridge applies the numbers and decides nothing. Absent directive
+        (cold cache, older backend) = no-op, keeping the 5-minute defaults.
+        """
+        if not behavioral_config:
+            return
+        cfg = behavioral_config.get("promptCache")
+        if not isinstance(cfg, dict):
+            return
+        ttl = cfg.get("anthropicTtl")
+        if isinstance(ttl, str):
+            backend.set_prompt_cache_ttl(ttl)
+        if "historyWindowTtlSeconds" in cfg:
+            _set_conv_cache_ttl(cfg.get("historyWindowTtlSeconds"))
+
     @executor.on_task
     async def handle_task(task: GatewayTask) -> dict[str, Any]:
         # Pick up any tools seeded since boot (e.g. update_pulse) before we
@@ -4437,6 +4479,7 @@ def run_single_agent(
         _sync_skip_permissions(behavioral_config)
         # Resolve computer-use live from this turn's directive (same rationale).
         _sync_computer_use(behavioral_config)
+        _sync_prompt_cache(behavioral_config)
 
         task_meta = task.raw.get("task", {}).get("metadata", {})
 
@@ -4943,6 +4986,7 @@ def run_single_agent(
         _sync_skip_permissions(behavioral_config)
         # Resolve computer-use live from this turn's directive (same rationale).
         _sync_computer_use(behavioral_config)
+        _sync_prompt_cache(behavioral_config)
         is_orchestrator = directives.get("isOrchestrator", False)
         skip_message = directives.get("skipMessage", False)
         skip_reason = directives.get("skipReason")
